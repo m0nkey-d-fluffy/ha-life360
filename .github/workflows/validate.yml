@@ -39,30 +39,40 @@ jobs:
         #   See core/.github/workflows/ci.yaml:
         #   ALL_PYTHON_VERSIONS & DEFAULT_PYTHON*
         # ---------------------------------------
-        # HA 2023.3 -> 3.10*, 3.11
-        # HA 2023.8 -> 3.11
-        # HA 2023.11 -> 3.11*, 3.12
-        # HA 2024.4 -> 3.12
+        # HA 2024.4  -> 3.12
+        # HA 2024.12 -> 3.12*, 3.13
+        # HA 2025.2  -> 3.13
 
         # hass-test-cc versions
         # ---------------------
-        # 0.13.42 -> HA 2023.7.0
-        # 0.13.49 -> HA 2023.8.0
-        # 0.13.109 -> HA 2024.3.3
-        # 0.13.115 -> HA 2024.4.4
+        # --- 3.12
         # 0.13.128 -> HA 2024.6.0b4 # Removed mypy-dev
         # 0.13.129 -> HA 2024.6.0b5
         # 0.13.136 -> HA 2024.6.4
         # 0.13.148 -> HA 2024.7.4
+        # 0.13.155 -> HA 2024.8.3
+        # 0.13.164 -> HA 2024.9.3
         # 0.13.175 -> HA 2024.10.4
         # 0.13.181 -> HA 2024.11.0
+        # 0.13.184 -> HA 2024.11.3
+        # --- 3.12, 3.13
+        # 0.13.195 -> HA 2024.12.5
+        # 0.13.205 -> HA 2025.1.4
+        # --- 3.13
+        # 0.13.215 -> HA 2025.2.5
+        # 0.13.225 -> HA 2025.3.4
+        # 0.13.236 -> HA 2025.4.4
+        # 0.13.246 -> HA 2025.5.3
+        # 0.13.252 -> HA 2025.6.1 # Fixed error from pycares about "Thread-1 (_run_safe_shutdown_loop)"
+        # 0.13.254 -> HA 2025.6.3
+        # 0.13.264 -> HA 2025.7.4
+        # 0.13.272 -> HA 2025.8.3
+        # 0.13.278 -> HA 2025.9.1
         include:
-          - hass-test-cc-version: "0.13.136"
-            python-version: "3.12"
-          - hass-test-cc-version: "0.13.175"
-            python-version: "3.12"
-          - hass-test-cc-version: "0.13.181"
-            python-version: "3.12"
+          - hass-test-cc-version: "0.13.252"
+            python-version: "3.13"
+          - hass-test-cc-version: "0.13.278"
+            python-version: "3.13"
     steps:
       - name: 📥 Checkout the repository
         uses: actions/checkout@v4

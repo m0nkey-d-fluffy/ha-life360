@@ -17,8 +17,7 @@ except ImportError as err:
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ENTITY_ID, Platform
+from homeassistant.const import CONF_ENTITY_ID, ENTITY_MATCH_ALL, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -32,6 +31,8 @@ from .const import (
 )
 from .coordinator import (
     CirclesMembersDataUpdateCoordinator,
+    L360ConfigEntry,
+    L360Coordinators,
     MemberDataUpdateCoordinator,
 )
 from .helpers import Life360Store, MemberID
@@ -43,7 +44,11 @@ _LOGGER = logging.getLogger(__name__)
 _PLATFORMS = [Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER]
 
 _UPDATE_LOCATION_SCHEMA = vol.Schema(
-    {vol.Required(CONF_ENTITY_ID): vol.Any(vol.All(vol.Lower, "all"), cv.entity_ids)}
+    {
+        vol.Required(CONF_ENTITY_ID): vol.Any(
+            vol.All(vol.Lower, ENTITY_MATCH_ALL), cv.entity_ids
+        )
+    }
 )
 
 
@@ -62,7 +67,7 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
     return True
 
 
-async def async_migrate_entry(_: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_migrate_entry(_: HomeAssistant, entry: L360ConfigEntry) -> bool:
     """Migrate config entry."""
     # Currently, no migration is supported.
     version = str(entry.version)
@@ -77,7 +82,7 @@ async def async_migrate_entry(_: HomeAssistant, entry: ConfigEntry) -> bool:
     return False
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> bool:
     """Set up config entry."""
     store = Life360Store(hass)
     await store.load()
@@ -122,22 +127,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await async_process_data()
     entry.async_on_unload(coordinator.async_add_listener(process_data))
-    hass.data[DOMAIN] = {"coordinator": coordinator, "mem_coordinator": mem_coordinator}
+    entry.runtime_data = L360Coordinators(coordinator, mem_coordinator)
 
     # Set up components for our platforms.
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> bool:
     """Unload config entry."""
+    # The coordinators will eventually be shut down when their listeners stop listening
+    # or ultimately when the config entry's "on unload" list is processed (which happens
+    # after this method returns.) And any background tasks created by the coordinators
+    # will be canceled after the "on unload" processing. But by then, resources those
+    # tasks were using may have disappeared. So, shut down the coordinators now to give
+    # them a chance to shutdown the background tasks themselves.
+    await asyncio.gather(
+        entry.runtime_data.coordinator.async_shutdown(),
+        *(
+            mem_crd.async_shutdown()
+            for mem_crd in entry.runtime_data.mem_coordinator.values()
+        ),
+    )
     # Unload components for our platforms.
-    result = await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
-    del hass.data[DOMAIN]
-    return result
+    return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
 
 
-async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_remove_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> bool:
     """Remove config entry."""
     # Don't delete store when removing old version 1 config entry.
     if entry.version < 2:

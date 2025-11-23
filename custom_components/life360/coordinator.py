@@ -27,6 +27,7 @@ from homeassistant.util import dt as dt_util
 from . import helpers
 from .const import (
     API_BASE_URL,
+    API_USER_AGENT,
     COMM_MAX_RETRIES,
     COMM_TIMEOUT,
     DOMAIN,
@@ -427,6 +428,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                    "Cache-Control": "no-cache",
                 }
 
                 session = self._acct_data[aid].session
@@ -529,6 +532,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -594,6 +598,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -635,6 +640,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 async with acct_data.session.get(url, headers=headers) as resp:
@@ -671,6 +677,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -735,6 +742,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -783,6 +791,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -842,6 +851,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -890,6 +900,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -937,6 +948,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 session = self._acct_data[aid].session
@@ -966,6 +978,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 async with acct_data.session.get(url, headers=headers) as resp:
@@ -1003,6 +1016,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 async with acct_data.session.get(url, headers=headers) as resp:
@@ -1031,6 +1045,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
 
                 async with acct_data.session.get(url, headers=headers) as resp:
@@ -1080,6 +1095,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
                 }
                 payload = {"command": command}
 

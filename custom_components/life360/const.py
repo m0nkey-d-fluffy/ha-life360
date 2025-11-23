@@ -9,6 +9,8 @@ DOMAIN = "life360"
 # API Configuration
 API_HOST = "api-cloudfront.life360.com"
 API_BASE_URL = f"https://{API_HOST}"
+# User agent matching the official Android app
+API_USER_AGENT = "com.life360.android.safetymapd/KOKO/23.50.0 android/13"
 
 ATTRIBUTION = "Data provided by life360.com"
 COMM_MAX_RETRIES = 4

@@ -36,6 +36,7 @@ LIFE360 = Life360
 AccountID = NewType("AccountID", str)
 CircleID = NewType("CircleID", str)
 MemberID = NewType("MemberID", str)
+DeviceID = NewType("DeviceID", str)
 
 
 @dataclass
@@ -309,6 +310,429 @@ class MemberData(ExtraStoredData):
 
 
 Members = dict[MemberID, MemberData]
+
+
+class DeviceType(IntEnum):
+    """Device type."""
+
+    TILE = 1
+    JIOBIT = 2  # Pet GPS tracker
+    UNKNOWN = 0
+
+
+@dataclass
+class DeviceLocationDetails:
+    """Device location details."""
+
+    latitude: float
+    longitude: float
+    last_updated: datetime
+    accuracy: int | None = None  # meters
+
+    @classmethod
+    def from_dict(cls, restored: Mapping[str, Any]) -> Self:
+        """Initialize from a dictionary."""
+        return cls(
+            restored["latitude"],
+            restored["longitude"],
+            LocationDetails.to_datetime(restored["last_updated"]),
+            restored.get("accuracy"),
+        )
+
+    @classmethod
+    def from_server(cls, raw_loc: Mapping[str, Any]) -> Self:
+        """Initialize from device location data from server."""
+        # Handle different timestamp formats
+        timestamp = raw_loc.get("timestamp") or raw_loc.get("lastUpdated")
+        if isinstance(timestamp, (int, float)):
+            last_updated = dt_util.utc_from_timestamp(timestamp)
+        elif timestamp:
+            last_updated = dt_util.parse_datetime(timestamp) or dt_util.utcnow()
+            last_updated = dt_util.as_utc(last_updated)
+        else:
+            last_updated = dt_util.utcnow()
+
+        return cls(
+            float(raw_loc.get("latitude") or raw_loc.get("lat", 0)),
+            float(raw_loc.get("longitude") or raw_loc.get("lng", 0)),
+            last_updated,
+            int(raw_loc["accuracy"]) if raw_loc.get("accuracy") else None,
+        )
+
+
+@dataclass
+class DeviceData(ExtraStoredData):
+    """Device data (Tile, Jiobit/Pet GPS)."""
+
+    device_id: str
+    name: str
+    device_type: DeviceType
+    location: DeviceLocationDetails | None = None
+    battery_level: int | None = None
+    battery_status: str | None = None  # e.g., "LOW", "NORMAL"
+    entity_picture: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a dict representation of the data."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, restored: Mapping[str, Any]) -> Self:
+        """Initialize from a dictionary."""
+        if restored_loc := restored.get("location"):
+            location = DeviceLocationDetails.from_dict(restored_loc)
+        else:
+            location = None
+        return cls(
+            restored["device_id"],
+            restored["name"],
+            DeviceType(restored["device_type"]),
+            location,
+            restored.get("battery_level"),
+            restored.get("battery_status"),
+            restored.get("entity_picture"),
+        )
+
+    @classmethod
+    def from_server(
+        cls, raw_device: Mapping[str, Any], provider: str = "tile"
+    ) -> Self:
+        """Initialize from device data from server."""
+        device_id = raw_device.get("id") or raw_device.get("deviceId", "")
+        name = raw_device.get("name") or raw_device.get("deviceName", "Unknown Device")
+
+        # Determine device type
+        if provider == "jiobit":
+            device_type = DeviceType.JIOBIT
+        elif provider == "tile":
+            device_type = DeviceType.TILE
+        else:
+            device_type = DeviceType.UNKNOWN
+
+        # Parse location if present
+        location = None
+        if raw_loc := raw_device.get("location"):
+            location = DeviceLocationDetails.from_server(raw_loc)
+        elif "latitude" in raw_device or "lat" in raw_device:
+            location = DeviceLocationDetails.from_server(raw_device)
+
+        # Parse battery info
+        battery_level = None
+        battery_status = None
+        if battery := raw_device.get("battery"):
+            if isinstance(battery, dict):
+                battery_level = battery.get("level")
+                battery_status = battery.get("status")
+            elif isinstance(battery, (int, float)):
+                battery_level = int(battery)
+
+        return cls(
+            device_id,
+            name,
+            device_type,
+            location,
+            battery_level,
+            battery_status,
+            raw_device.get("avatar") or raw_device.get("image"),
+        )
+
+
+Devices = dict[DeviceID, DeviceData]
+
+PlaceID = NewType("PlaceID", str)
+
+
+@dataclass
+class PlaceData:
+    """Life360 Place data."""
+
+    place_id: str
+    name: str
+    latitude: float
+    longitude: float
+    radius: float  # meters
+    source_id: str | None = None  # Original source (e.g., Google Places ID)
+
+    @classmethod
+    def from_server(cls, raw_place: Mapping[str, Any]) -> Self:
+        """Initialize from place data from server."""
+        return cls(
+            raw_place.get("id", ""),
+            raw_place.get("name", "Unknown Place"),
+            float(raw_place.get("latitude", 0)),
+            float(raw_place.get("longitude", 0)),
+            float(raw_place.get("radius", 100)),
+            raw_place.get("sourceId"),
+        )
+
+
+@dataclass
+class DrivingStats:
+    """Driving statistics for a member."""
+
+    total_distance: float = 0  # miles
+    total_trips: int = 0
+    max_speed: float = 0  # mph
+    hard_brakes: int = 0
+    rapid_accelerations: int = 0
+    phone_usage_while_driving: int = 0  # minutes
+    score: int | None = None  # driving score 0-100
+
+    @classmethod
+    def from_server(cls, raw_stats: Mapping[str, Any]) -> Self:
+        """Initialize from stats data from server."""
+        return cls(
+            float(raw_stats.get("totalDistance", 0)),
+            int(raw_stats.get("totalTrips", 0)),
+            float(raw_stats.get("maxSpeed", 0)),
+            int(raw_stats.get("hardBrakes", 0)),
+            int(raw_stats.get("rapidAccelerations", 0)),
+            int(raw_stats.get("phoneUsage", 0)),
+            int(raw_stats["score"]) if raw_stats.get("score") is not None else None,
+        )
+
+
+@dataclass
+class EmergencyContact:
+    """Emergency contact data."""
+
+    name: str
+    phone: str
+    relationship: str | None = None
+
+    @classmethod
+    def from_server(cls, raw_contact: Mapping[str, Any]) -> Self:
+        """Initialize from contact data from server."""
+        return cls(
+            raw_contact.get("name", "Unknown"),
+            raw_contact.get("phone", ""),
+            raw_contact.get("relationship"),
+        )
+
+
+@dataclass
+class TripData:
+    """Trip data from driving behavior."""
+
+    trip_id: str
+    start_time: datetime
+    end_time: datetime
+    start_address: str | None
+    end_address: str | None
+    distance: float  # miles
+    duration: int  # seconds
+    max_speed: float  # mph
+    hard_brakes: int = 0
+    rapid_accelerations: int = 0
+
+    @classmethod
+    def from_server(cls, raw_trip: Mapping[str, Any]) -> Self:
+        """Initialize from trip data from server."""
+        return cls(
+            raw_trip.get("id", ""),
+            dt_util.utc_from_timestamp(int(raw_trip.get("startTime", 0))),
+            dt_util.utc_from_timestamp(int(raw_trip.get("endTime", 0))),
+            raw_trip.get("startAddress"),
+            raw_trip.get("endAddress"),
+            float(raw_trip.get("distance", 0)),
+            int(raw_trip.get("duration", 0)),
+            float(raw_trip.get("maxSpeed", 0)),
+            int(raw_trip.get("hardBrakes", 0)),
+            int(raw_trip.get("rapidAccelerations", 0)),
+        )
+
+
+@dataclass
+class GeofenceZone:
+    """Geofence zone data."""
+
+    zone_id: str
+    name: str
+    latitude: float
+    longitude: float
+    radius: float  # meters
+    zone_type: str | None = None  # e.g., "arrival", "departure", "both"
+    active: bool = True
+
+    @classmethod
+    def from_server(cls, raw_zone: Mapping[str, Any]) -> Self:
+        """Initialize from zone data from server."""
+        return cls(
+            raw_zone.get("id", ""),
+            raw_zone.get("name", "Unknown Zone"),
+            float(raw_zone.get("latitude", 0)),
+            float(raw_zone.get("longitude", 0)),
+            float(raw_zone.get("radius", 100)),
+            raw_zone.get("type"),
+            raw_zone.get("active", True),
+        )
+
+
+@dataclass
+class PlaceAlert:
+    """Place alert configuration."""
+
+    alert_id: str
+    place_id: str
+    place_name: str
+    member_id: str
+    member_name: str
+    alert_type: str  # "arrival", "departure", "both"
+    enabled: bool = True
+
+    @classmethod
+    def from_server(cls, raw_alert: Mapping[str, Any]) -> Self:
+        """Initialize from alert data from server."""
+        return cls(
+            raw_alert.get("id", ""),
+            raw_alert.get("placeId", ""),
+            raw_alert.get("placeName", "Unknown Place"),
+            raw_alert.get("memberId", ""),
+            raw_alert.get("memberName", "Unknown"),
+            raw_alert.get("alertType", "both"),
+            raw_alert.get("enabled", True),
+        )
+
+
+@dataclass
+class ScheduledAlert:
+    """Scheduled check-in alert."""
+
+    alert_id: str
+    member_id: str
+    member_name: str
+    schedule_time: str  # e.g., "08:00"
+    days: list[str]  # e.g., ["monday", "tuesday"]
+    enabled: bool = True
+    last_check_in: datetime | None = None
+
+    @classmethod
+    def from_server(cls, raw_alert: Mapping[str, Any]) -> Self:
+        """Initialize from scheduled alert data from server."""
+        last_check = raw_alert.get("lastCheckIn")
+        last_check_in = None
+        if last_check:
+            if isinstance(last_check, (int, float)):
+                last_check_in = dt_util.utc_from_timestamp(last_check)
+            elif isinstance(last_check, str):
+                last_check_in = dt_util.parse_datetime(last_check)
+
+        return cls(
+            raw_alert.get("id", ""),
+            raw_alert.get("memberId", ""),
+            raw_alert.get("memberName", "Unknown"),
+            raw_alert.get("time", ""),
+            raw_alert.get("days", []),
+            raw_alert.get("enabled", True),
+            last_check_in,
+        )
+
+
+@dataclass
+class MemberRole:
+    """Member role in a circle."""
+
+    member_id: str
+    role: str  # "admin", "member"
+    is_admin: bool = False
+
+    @classmethod
+    def from_server(cls, raw_role: Mapping[str, Any]) -> Self:
+        """Initialize from role data from server."""
+        role = raw_role.get("role", "member")
+        return cls(
+            raw_role.get("memberId", ""),
+            role,
+            role.lower() == "admin",
+        )
+
+
+@dataclass
+class DeviceIssue:
+    """Device issue/error data."""
+
+    device_id: str
+    device_name: str
+    issue_type: str
+    message: str
+    severity: str | None = None  # "warning", "error"
+    timestamp: datetime | None = None
+
+    @classmethod
+    def from_server(cls, raw_issue: Mapping[str, Any]) -> Self:
+        """Initialize from issue data from server."""
+        ts = raw_issue.get("timestamp")
+        timestamp = None
+        if ts:
+            if isinstance(ts, (int, float)):
+                timestamp = dt_util.utc_from_timestamp(ts)
+            elif isinstance(ts, str):
+                timestamp = dt_util.parse_datetime(ts)
+
+        return cls(
+            raw_issue.get("deviceId", ""),
+            raw_issue.get("deviceName", "Unknown"),
+            raw_issue.get("type", "unknown"),
+            raw_issue.get("message", ""),
+            raw_issue.get("severity"),
+            timestamp,
+        )
+
+
+@dataclass
+class UserProfile:
+    """Current user profile data."""
+
+    user_id: str
+    first_name: str
+    last_name: str
+    email: str | None = None
+    phone: str | None = None
+    avatar: str | None = None
+    created_at: datetime | None = None
+
+    @classmethod
+    def from_server(cls, raw_user: Mapping[str, Any]) -> Self:
+        """Initialize from user data from server."""
+        created = raw_user.get("createdAt")
+        created_at = None
+        if created:
+            if isinstance(created, (int, float)):
+                created_at = dt_util.utc_from_timestamp(created)
+            elif isinstance(created, str):
+                created_at = dt_util.parse_datetime(created)
+
+        return cls(
+            raw_user.get("id", ""),
+            raw_user.get("firstName", ""),
+            raw_user.get("lastName", ""),
+            raw_user.get("email"),
+            raw_user.get("phone"),
+            raw_user.get("avatar"),
+            created_at,
+        )
+
+
+@dataclass
+class ConnectedIntegration:
+    """Connected integration/app data."""
+
+    integration_id: str
+    name: str
+    provider: str
+    connected: bool = True
+    status: str | None = None
+
+    @classmethod
+    def from_server(cls, raw_integration: Mapping[str, Any]) -> Self:
+        """Initialize from integration data from server."""
+        return cls(
+            raw_integration.get("id", ""),
+            raw_integration.get("name", "Unknown"),
+            raw_integration.get("provider", ""),
+            raw_integration.get("connected", True),
+            raw_integration.get("status"),
+        )
 
 
 @dataclass

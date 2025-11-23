@@ -3,6 +3,31 @@
 A [Home Assistant](https://www.home-assistant.io/) integration for Life360.
 Creates Device Tracker (`device_tracker`) entities to show where Life360 Members are located.
 
+**New in v0.7.0:**
+
+**Device Tracking:**
+- Support for **Tile Bluetooth trackers** and **Jiobit pet GPS trackers**
+- **Device Issues sensor** - Monitor Tile/Jiobit device problems
+- **Jiobit Buzz service** - Send buzz command to find your pet
+
+**Driving & Trips:**
+- **Driving Statistics sensors** - Track weekly distance, trips, max speed, hard brakes, and more
+- **Crash Detection sensor** - Monitor crash detection status
+- **Trip History sensors** - View recent trips with detailed statistics
+
+**Places & Zones:**
+- **Places discovery service** - Retrieve Life360 Places data for creating Home Assistant zones
+- **Geofence discovery service** - Retrieve Life360 geofence data for creating Home Assistant zones
+- **Place Alert sensors** - Binary sensors showing place alert configurations
+
+**Alerts & Contacts:**
+- **Scheduled Alerts sensors** - View scheduled check-in alerts per member
+- **Emergency Contacts service** - Retrieve emergency contacts from your circles
+
+**Account & Integrations:**
+- **User Profile sensor** - View Life360 account information
+- **Connected Integrations service** - View linked apps and services
+
 ## Current Changes / Improvements
 
 As of HA 2024.2 the built-in Life360 integration was removed due to the integration effectively being broken and seemingly unrepairable.
@@ -172,6 +197,54 @@ You can put whatever you want in the "Account identifier" box.
 
 This custom integration supports HomeAssistant versions 2024.8.3 or newer.
 
+## Tile & Pet GPS Tracker Support
+
+This integration now supports **Tile Bluetooth trackers** and **Jiobit pet GPS trackers** that are linked to your Life360 account.
+
+### Supported Devices
+- **Tile trackers** - All Tile models (Mate, Pro, Slim, Sticker, etc.)
+- **Jiobit pet GPS** - Pet and child GPS trackers integrated with Life360
+
+### How It Works
+When you link a Tile or Jiobit device to your Life360 account through the Life360 mobile app, this integration will automatically discover and create `device_tracker` entities for each device.
+
+### Device Tracker Attributes
+Each device tracker entity includes:
+- `latitude` / `longitude` - Last known location
+- `gps_accuracy` - Location accuracy in meters (when available)
+- `battery_level` - Battery percentage (when available)
+- `battery_status` - Battery status (e.g., "LOW", "NORMAL")
+- `device_type` - "Tile" or "Pet GPS"
+- `device_id` - Unique device identifier
+- `last_seen` - When the device was last seen
+
+### Linking Devices
+To add Tile or Jiobit devices:
+1. Open the **Life360 mobile app**
+2. Go to **Settings** → **Connected Apps** or **Devices**
+3. Link your Tile account or add your Jiobit device
+4. Reload the Life360 integration in Home Assistant
+
+> **Note:** Device locations are updated based on the Life360 server data, which depends on how recently the device has been seen by the Tile network or the Jiobit cellular connection.
+
+## Driving Statistics & Crash Detection
+
+This integration creates sensor entities for driving behavior data:
+
+### Driving Statistics Sensors (per member)
+- **Weekly Distance** - Total miles driven this week
+- **Weekly Trips** - Number of trips this week
+- **Max Speed** - Highest speed recorded this week
+- **Hard Brakes** - Number of hard braking events
+- **Rapid Accelerations** - Number of rapid acceleration events
+- **Phone Usage While Driving** - Minutes of phone usage while driving
+- **Driving Score** - Overall driving safety score (0-100)
+
+### Crash Detection Sensor
+- **Life360 Crash Detection** - Shows if crash detection is enabled/disabled
+
+> **Note:** Driving statistics are updated every 15 minutes. Crash detection status is checked hourly.
+
 ## Services
 
 ### `life360.update_location`
@@ -180,3 +253,177 @@ Can be used to request a location update for one or more Members.
 Once this service is called, the Member's location will typically be updated every five seconds for about one minute.
 The service takes one parameters, `entity_id`, which can be a single entity ID, a list of entity ID's, or the word "all" (which means all Life360 trackers.)
 The use of the `target` parameter should also work.
+
+### `life360.sync_places`
+
+Retrieves all Life360 Places and fires a `life360_places` event with the data. Use this to discover your Life360 places and their coordinates for creating Home Assistant zones.
+
+The service returns data including:
+- Place name, latitude, longitude, and radius
+- Place ID for reference
+
+Example automation to log places:
+```yaml
+automation:
+  - alias: "Log Life360 Places"
+    trigger:
+      - platform: event
+        event_type: life360_places
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Life360 Places"
+          message: "{{ trigger.event.data.places | length }} places found"
+```
+
+### `life360.sync_geofence_zones`
+
+Retrieves all Life360 geofence zones and fires a `life360_geofences` event with the data. Use this to discover geofence zones configured for arrival/departure alerts.
+
+The service returns data including:
+- Zone name, latitude, longitude, and radius
+- Zone type and active status
+- Associated circle name
+
+Example automation to log geofences:
+```yaml
+automation:
+  - alias: "Log Life360 Geofences"
+    trigger:
+      - platform: event
+        event_type: life360_geofences
+    action:
+      - service: notify.persistent_notification
+        data:
+          title: "Life360 Geofences"
+          message: "{{ trigger.event.data.zones | length }} geofences found"
+```
+
+### `life360.get_emergency_contacts`
+
+Retrieves emergency contacts from all Life360 circles. The contacts are returned as service response data and also fired as a `life360_emergency_contacts` event.
+
+```yaml
+automation:
+  - alias: "Check Emergency Contacts Weekly"
+    trigger:
+      - platform: time
+        at: "00:00:00"
+        weekday: "sun"
+    action:
+      - service: life360.get_emergency_contacts
+```
+
+The event data includes:
+```yaml
+contacts:
+  - circle: "Family Circle"
+    name: "Emergency Contact Name"
+    phone: "+1234567890"
+    relationship: "Parent"
+```
+
+## Trip History
+
+This integration provides trip history sensors for each member. These sensors show:
+- **Recent Trips** - Number of recent trips
+- Detailed attributes including:
+  - Start/end times
+  - Start/end addresses
+  - Distance traveled
+  - Duration
+  - Max speed
+  - Hard brakes and rapid accelerations
+
+> **Note:** Trip history is updated every 30 minutes to reduce API calls.
+
+## Place Alerts
+
+Binary sensors are created for each place alert configured in your Life360 circles. These show:
+- Alert enabled/disabled status
+- Place and member details
+- Alert type (arrival, departure, or both)
+
+These can be used in automations to monitor when Life360 alert configurations change.
+
+## Scheduled Alerts
+
+Sensors showing scheduled check-in alerts configured for each member. Attributes include:
+- Alert time and days
+- Enabled status
+- Last check-in timestamp
+
+## Device Issues
+
+A sensor that monitors issues with your Tile and Jiobit devices:
+- Device connectivity problems
+- Low battery warnings
+- Signal issues
+
+## User Profile
+
+Shows your Life360 account information:
+- Name and email
+- Account creation date
+- Avatar URL
+
+### `life360.get_integrations`
+
+Retrieves all connected integrations/apps from your Life360 account. Returns information about linked services like Tile, Jiobit, etc.
+
+### `life360.buzz_jiobit`
+
+Sends a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound.
+
+```yaml
+service: life360.buzz_jiobit
+data:
+  device_id: "dr123456"
+  circle_id: "abc123-def456"
+```
+
+> **Note:** The device_id and circle_id can be found in the device tracker entity attributes.
+
+## Troubleshooting
+
+### Enable Debug Logging
+
+To troubleshoot issues, enable debug logging for the Life360 integration by adding this to your `configuration.yaml`:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.life360: debug
+```
+
+After adding this, restart Home Assistant and check the logs in **Settings > System > Logs**.
+
+### Verbosity Levels
+
+The integration has a **DEBUG message verbosity** setting (found in the integration options if you have "advanced mode" enabled in your user profile). The levels are:
+
+| Level | Description |
+|-------|-------------|
+| 0 | Redacted request errors only |
+| 1 | Above plus redacted response headers |
+| 2 | Above plus redacted response data (recommended for troubleshooting) |
+| 3 | Above but only sensitive data is redacted |
+| 4 | No redactions (includes sensitive data - use with caution) |
+
+### Common Issues
+
+**"No Life360 integration configured"**
+- Ensure you have added and configured the Life360 integration in Settings > Devices & services
+
+**Device trackers not appearing**
+- Check the logs for rate limiting (HTTP 429) or authentication errors (HTTP 401/403)
+- The integration may take several minutes to retrieve the initial circle/member list due to Life360 server restrictions
+
+**Tile/Jiobit devices not showing**
+- Ensure the devices are linked to your Life360 account in the Life360 mobile app
+- Check debug logs for device location API responses
+
+**Services not working**
+- Enable debug logging and check for error messages when calling the service
+- Verify the integration has finished its initial setup (check for WARNING messages in logs)

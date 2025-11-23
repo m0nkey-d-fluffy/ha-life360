@@ -422,9 +422,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Build the request
-                url = f"{API_BASE_URL}/v5/circles/devices/locations"
-                params = {"providers[]": ["tile", "jiobit"]}
+                # Build the request - manually construct URL to ensure correct param format
+                url = f"{API_BASE_URL}/v5/circles/devices/locations?providers[]=tile&providers[]=jiobit"
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
@@ -434,17 +433,20 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                 session = self._acct_data[aid].session
                 if self._options.verbosity >= 3:
-                    _LOGGER.debug("GET %s params=%s", url, params)
+                    _LOGGER.debug("GET %s", url)
 
-                async with session.get(url, params=params, headers=headers) as resp:
+                async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if self._options.verbosity >= 2:
-                            _LOGGER.debug(
-                                "Device locations response (%d bytes): %s",
-                                len(str(data)),
-                                data if self._options.verbosity >= 3 else "[redacted]",
-                            )
+                        # Always log response keys at debug level
+                        _LOGGER.debug(
+                            "Device locations response: status=200, keys=%s, tile_count=%d, jiobit_count=%d",
+                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                            len(data.get("tile", [])) if isinstance(data, dict) else 0,
+                            len(data.get("jiobit", [])) if isinstance(data, dict) else 0,
+                        )
+                        if self._options.verbosity >= 3:
+                            _LOGGER.debug("Full device locations response: %s", data)
 
                         # Parse devices from response
                         for provider in ["tile", "jiobit"]:
@@ -456,35 +458,31 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                             raw_device, provider
                                         )
                                         devices[DeviceID(device.device_id)] = device
-                                        if self._options.verbosity >= 2:
-                                            _LOGGER.debug(
-                                                "Parsed %s device: %s (%s)",
-                                                provider,
-                                                device.name,
-                                                device.device_id,
-                                            )
+                                        _LOGGER.debug(
+                                            "Parsed %s device: %s (%s)",
+                                            provider,
+                                            device.name,
+                                            device.device_id,
+                                        )
                                     except (KeyError, ValueError) as err:
                                         _LOGGER.warning(
-                                            "Error parsing %s device: %s - %s",
+                                            "Error parsing %s device: %s - raw=%s - %s",
                                             provider,
-                                            raw_device.get("name", "unknown"),
+                                            raw_device.get("name", raw_device.get("deviceName", "unknown")),
+                                            raw_device,
                                             err,
                                         )
 
                         # Success - return devices (may be empty if no devices linked)
-                        if self._options.verbosity >= 1:
-                            _LOGGER.debug(
-                                "Found %d devices in circle %s", len(devices), cid
-                            )
+                        _LOGGER.debug("Found %d total devices", len(devices))
                         return devices, None
                     else:
                         resp_text = await resp.text()
-                        if self._options.verbosity >= 2:
-                            _LOGGER.debug(
-                                "Device locations request failed: HTTP %s - %s",
-                                resp.status,
-                                resp_text[:200],
-                            )
+                        _LOGGER.debug(
+                            "Device locations request failed: HTTP %s - %s",
+                            resp.status,
+                            resp_text[:500],
+                        )
                         return devices, resp.status
             except Exception as err:
                 _LOGGER.debug("Error fetching device locations: %s", err)

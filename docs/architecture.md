@@ -6,14 +6,14 @@ This document describes the internal architecture and data flows of the Life360 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Home Assistant                                │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐ │
-│  │   Device    │  │   Binary    │  │   Sensor    │  │  Services  │ │
-│  │  Trackers   │  │   Sensors   │  │  Platform   │  │            │ │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └─────┬──────┘ │
-│         │                │                │                │        │
-│         └────────────────┴────────┬───────┴────────────────┘        │
-│                                   │                                  │
+│                        Home Assistant                               │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐  │
+│  │   Device    │  │   Binary    │  │   Sensor    │  │  Services  │  │
+│  │  Trackers   │  │   Sensors   │  │  Platform   │  │            │  │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └─────┬──────┘  │
+│         │                │                │               │         │
+│         └────────────────┴────────┬───────┴───────────────┘         │
+│                                   │                                 │
 │                    ┌──────────────▼──────────────┐                  │
 │                    │      Coordinators           │                  │
 │                    │  ┌─────────────────────┐    │                  │
@@ -29,8 +29,8 @@ This document describes the internal architecture and data flows of the Life360 
 │                    │  │   Coordinator       │    │                  │
 │                    │  └─────────────────────┘    │                  │
 │                    └──────────────┬──────────────┘                  │
-│                                   │                                  │
-└───────────────────────────────────┼──────────────────────────────────┘
+│                                   │                                 │
+└───────────────────────────────────┼─────────────────────────────────┘
                                     │
                          ┌──────────▼──────────┐
                          │   Life360 API       │
@@ -58,18 +58,18 @@ custom_components/life360/
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                    Integration Startup                              │
+│                    Integration Startup                             │
 └────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌────────────────────────────────────────────────────────────────────┐
 │ 1. async_setup() - Register global services                        │
-│    • update_location                                                │
-│    • sync_places                                                    │
+│    • update_location                                               │
+│    • sync_places                                                   │
 │    • sync_geofence_zones                                           │
-│    • get_emergency_contacts                                         │
-│    • get_integrations                                               │
-│    • buzz_jiobit                                                    │
+│    • get_emergency_contacts                                        │
+│    • get_integrations                                              │
+│    • buzz_jiobit                                                   │
 └────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -100,20 +100,20 @@ The main coordinator that manages Life360 API connections and retrieves circle/m
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│          CirclesMembersDataUpdateCoordinator                     │
+│          CirclesMembersDataUpdateCoordinator                    │
 ├─────────────────────────────────────────────────────────────────┤
-│ Data: CirclesMembersData                                         │
+│ Data: CirclesMembersData                                        │
 │   ├── circles: dict[CircleID, CircleData]                       │
 │   └── mem_details: dict[MemberID, MemberDetails]                │
 ├─────────────────────────────────────────────────────────────────┤
-│ Responsibilities:                                                │
+│ Responsibilities:                                               │
 │   • Manage API sessions per account                             │
 │   • Retrieve circles and members list                           │
 │   • Handle rate limiting and login errors                       │
 │   • Persist data to storage                                     │
 │   • Provide API methods for other coordinators/services         │
 ├─────────────────────────────────────────────────────────────────┤
-│ API Methods:                                                     │
+│ API Methods:                                                    │
 │   • get_circle_devices()      • get_driving_stats()             │
 │   • get_all_devices()         • get_crash_detection_status()    │
 │   • get_circle_places()       • get_emergency_contacts()        │
@@ -131,15 +131,15 @@ Per-member coordinator for location updates.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│            MemberDataUpdateCoordinator                           │
+│            MemberDataUpdateCoordinator                          │
 ├─────────────────────────────────────────────────────────────────┤
-│ Data: MemberData                                                 │
+│ Data: MemberData                                                │
 │   ├── details: MemberDetails (name, avatar)                     │
 │   ├── loc: LocationData (lat, lon, accuracy, speed, etc.)       │
 │   └── loc_missing: NoLocReason                                  │
 ├─────────────────────────────────────────────────────────────────┤
-│ Update Interval: 5 seconds                                       │
-│ Responsibilities:                                                │
+│ Update Interval: 5 seconds                                      │
+│ Responsibilities:                                               │
 │   • Poll member location from API                               │
 │   • Handle multiple circles (take best data)                    │
 │   • Track location missing reasons                              │
@@ -152,13 +152,13 @@ Coordinator for Tile and Jiobit device tracking.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│            DeviceDataUpdateCoordinator                           │
+│            DeviceDataUpdateCoordinator                          │
 ├─────────────────────────────────────────────────────────────────┤
 │ Data: dict[DeviceID, DeviceData]                                │
 │   └── DeviceData: device_id, name, type, location, battery      │
 ├─────────────────────────────────────────────────────────────────┤
-│ Update Interval: 5 seconds                                       │
-│ Responsibilities:                                                │
+│ Update Interval: 5 seconds                                      │
+│ Responsibilities:                                               │
 │   • Poll Tile/Jiobit locations via /v5/circles/devices/locations│
 │   • Parse provider-specific response formats                    │
 │   • Signal when devices are added/removed                       │
@@ -185,23 +185,23 @@ Additional coordinators for less frequently updated data:
 
 ```
 ┌──────────┐     ┌──────────────┐     ┌─────────────┐     ┌──────────┐
-│  Timer   │────▶│   Member     │────▶│  Life360    │────▶│  API     │
+│  Timer   │───▶│  Member      │────▶│  Life360    │───▶│  API     │
 │ (5 sec)  │     │ Coordinator  │     │  API Call   │     │ Response │
 └──────────┘     └──────────────┘     └─────────────┘     └────┬─────┘
                                                                │
      ┌─────────────────────────────────────────────────────────┘
      │
      ▼
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│   Parse      │────▶│   Update     │────▶│   Entity     │
-│  Response    │     │ MemberData   │     │ State Update │
-└──────────────┘     └──────────────┘     └──────────────┘
+┌──────────────┐     ┌──────────────┐     ┌───────────────┐
+│   Parse      │───▶│   Update     │────▶│   Entity      │
+│  Response    │     │ MemberData   │     │ State Update  │
+└──────────────┘     └──────────────┘     └───────────────┘
                                                  │
                                                  ▼
-                                          ┌──────────────┐
+                                          ┌───────────────┐
                                           │ Home Assistant│
                                           │  State Machine│
-                                          └──────────────┘
+                                          └───────────────┘
 ```
 
 ## Data Flow: Service Call
@@ -217,13 +217,13 @@ Example: `life360.sync_places`
        ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ sync_places_to_zones(call: ServiceCall)                      │
-│   1. Get config entries                                       │
+│   1. Get config entries                                      │
 │   2. For each entry with runtime_data:                       │
 │      a. Get coordinator from entry.runtime_data              │
 │      b. Call coordinator.get_all_places()                    │
 │      c. Collect place data                                   │
 │   3. Fire 'life360_places' event                             │
-│   4. Return places dict                                       │
+│   4. Return places dict                                      │
 └──────────────────────────────────────────────────────────────┘
        │
        ├────────────────────────┐
@@ -292,7 +292,7 @@ Life360 Integration
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                      Error Handling Flow                         │
+│                      Error Handling Flow                        │
 └─────────────────────────────────────────────────────────────────┘
 
 API Request

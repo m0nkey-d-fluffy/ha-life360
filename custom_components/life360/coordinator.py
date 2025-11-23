@@ -26,6 +26,8 @@ from homeassistant.util import dt as dt_util
 
 from . import helpers
 from .const import (
+    API_BASE_URL,
+    API_USER_AGENT,
     COMM_MAX_RETRIES,
     COMM_TIMEOUT,
     DOMAIN,
@@ -33,6 +35,7 @@ from .const import (
     LTD_LOGIN_ERROR_RETRY_DELAY,
     MAX_LTD_LOGIN_ERROR_RETRIES,
     SIGNAL_ACCT_STATUS,
+    SIGNAL_DEVICES_CHANGED,
     UPDATE_INTERVAL,
 )
 from .helpers import (
@@ -41,6 +44,8 @@ from .helpers import (
     CircleID,
     CirclesMembersData,
     ConfigOptions,
+    DeviceData,
+    DeviceID,
     Life360Store,
     MemberData,
     MemberDetails,
@@ -390,6 +395,723 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 return raw_member
         # Can be NO_DATA or NOT_FOUND.
         return raw_member
+
+    async def get_circle_devices(
+        self, cid: CircleID
+    ) -> tuple[dict[DeviceID, DeviceData], int | None]:
+        """Get devices (Tiles, Jiobit) for a circle via direct API call.
+
+        Returns:
+            Tuple of (devices dict, HTTP status code if error or None if success)
+        """
+        devices: dict[DeviceID, DeviceData] = {}
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("get_circle_devices: Circle %s not found", cid)
+            return devices, None
+
+        if self._options.verbosity >= 2:
+            _LOGGER.debug("Fetching device locations for circle %s", cid)
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                # Build the request - manually construct URL to ensure correct param format
+                url = f"{API_BASE_URL}/v5/circles/devices/locations?providers[]=tile&providers[]=jiobit"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                    "Cache-Control": "no-cache",
+                }
+
+                session = self._acct_data[aid].session
+                if self._options.verbosity >= 3:
+                    _LOGGER.debug("GET %s", url)
+
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        # Always log response keys at debug level
+                        _LOGGER.debug(
+                            "Device locations response: status=200, keys=%s, tile_count=%d, jiobit_count=%d",
+                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                            len(data.get("tile", [])) if isinstance(data, dict) else 0,
+                            len(data.get("jiobit", [])) if isinstance(data, dict) else 0,
+                        )
+                        if self._options.verbosity >= 3:
+                            _LOGGER.debug("Full device locations response: %s", data)
+
+                        # Parse devices from response
+                        for provider in ["tile", "jiobit"]:
+                            provider_devices = data.get(provider, [])
+                            if isinstance(provider_devices, list):
+                                for raw_device in provider_devices:
+                                    try:
+                                        device = DeviceData.from_server(
+                                            raw_device, provider
+                                        )
+                                        devices[DeviceID(device.device_id)] = device
+                                        _LOGGER.debug(
+                                            "Parsed %s device: %s (%s)",
+                                            provider,
+                                            device.name,
+                                            device.device_id,
+                                        )
+                                    except (KeyError, ValueError) as err:
+                                        _LOGGER.warning(
+                                            "Error parsing %s device: %s - raw=%s - %s",
+                                            provider,
+                                            raw_device.get("name", raw_device.get("deviceName", "unknown")),
+                                            raw_device,
+                                            err,
+                                        )
+
+                        # Success - return devices (may be empty if no devices linked)
+                        _LOGGER.debug("Found %d total devices", len(devices))
+                        return devices, None
+                    else:
+                        resp_text = await resp.text()
+                        _LOGGER.debug(
+                            "Device locations request failed: HTTP %s - %s",
+                            resp.status,
+                            resp_text[:500],
+                        )
+                        return devices, resp.status
+            except Exception as err:
+                _LOGGER.debug("Error fetching device locations: %s", err)
+                if self._options.verbosity >= 3:
+                    _LOGGER.debug("Exception details", exc_info=True)
+
+        return devices, None
+
+    async def get_all_devices(self) -> tuple[dict[DeviceID, DeviceData], bool]:
+        """Get all devices from all circles.
+
+        Returns:
+            Tuple of (devices dict, True if 403 forbidden was encountered)
+        """
+        all_devices: dict[DeviceID, DeviceData] = {}
+        got_403 = False
+
+        for cid in self.data.circles:
+            circle_devices, status = await self.get_circle_devices(cid)
+            all_devices.update(circle_devices)
+            if status == 403:
+                got_403 = True
+
+        return all_devices, got_403
+
+    async def get_circle_places(
+        self, cid: CircleID
+    ) -> list[helpers.PlaceData]:
+        """Get places for a circle via direct API call."""
+        places: list[helpers.PlaceData] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return places
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/circles/{cid}/allplaces"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Places response for circle %s: %s", cid, data)
+
+                        raw_places = data.get("places", [])
+                        if isinstance(raw_places, list):
+                            for raw_place in raw_places:
+                                try:
+                                    place = helpers.PlaceData.from_server(raw_place)
+                                    places.append(place)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing place: %s", err)
+
+                        if places:
+                            return places
+                    else:
+                        _LOGGER.debug("Places request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching places: %s", err)
+
+        return places
+
+    async def get_all_places(self) -> dict[str, helpers.PlaceData]:
+        """Get all places from all circles."""
+        all_places: dict[str, helpers.PlaceData] = {}
+
+        for cid in self.data.circles:
+            circle_places = await self.get_circle_places(cid)
+            for place in circle_places:
+                # Use place_id as key, or name if no id
+                key = place.place_id or place.name
+                all_places[key] = place
+
+        return all_places
+
+    async def get_driving_stats(
+        self, cid: CircleID, mid: MemberID, week_offset: int = 0
+    ) -> helpers.DrivingStats | None:
+        """Get driving statistics for a member."""
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("get_driving_stats: Circle %s not found", cid)
+            return None
+
+        if self._options.verbosity >= 2:
+            _LOGGER.debug("Fetching driving stats for member %s (week offset: %d)", mid, week_offset)
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/drivereport/circle/{cid}/user/{mid}/stats"
+                params = {"weekOffset": str(week_offset)}
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                if self._options.verbosity >= 3:
+                    _LOGGER.debug("GET %s params=%s", url, params)
+
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if self._options.verbosity >= 2:
+                            _LOGGER.debug(
+                                "Driving stats for %s: score=%s, distance=%s, trips=%s",
+                                mid,
+                                data.get("score"),
+                                data.get("distance"),
+                                data.get("numTrips"),
+                            )
+                        if self._options.verbosity >= 3:
+                            _LOGGER.debug("Full driving stats response: %s", data)
+                        return helpers.DrivingStats.from_server(data)
+                    else:
+                        _LOGGER.debug("Driving stats request failed: HTTP %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching driving stats for %s: %s", mid, err)
+                if self._options.verbosity >= 3:
+                    _LOGGER.debug("Exception details", exc_info=True)
+
+        return None
+
+    async def get_crash_detection_status(self) -> bool | None:
+        """Get crash detection enabled status."""
+        for aid, acct_data in self._acct_data.items():
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/driverbehavior/crashenabledstatus"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                async with acct_data.session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Crash detection status: %s", data)
+                        return data.get("crashDetection", {}).get("enabled", False)
+                    else:
+                        _LOGGER.debug("Crash status request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching crash status: %s", err)
+
+        return None
+
+    async def get_emergency_contacts(
+        self, cid: CircleID
+    ) -> list[helpers.EmergencyContact]:
+        """Get emergency contacts for a circle."""
+        contacts: list[helpers.EmergencyContact] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return contacts
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/circles/{cid}/emergencyContacts"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Emergency contacts: %s", data)
+
+                        raw_contacts = data.get("emergencyContacts", [])
+                        if isinstance(raw_contacts, list):
+                            for raw_contact in raw_contacts:
+                                try:
+                                    contact = helpers.EmergencyContact.from_server(
+                                        raw_contact
+                                    )
+                                    contacts.append(contact)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing contact: %s", err)
+
+                        if contacts:
+                            return contacts
+                    else:
+                        _LOGGER.debug("Emergency contacts failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching emergency contacts: %s", err)
+
+        return contacts
+
+    async def get_all_emergency_contacts(
+        self,
+    ) -> dict[CircleID, list[helpers.EmergencyContact]]:
+        """Get emergency contacts from all circles."""
+        all_contacts: dict[CircleID, list[helpers.EmergencyContact]] = {}
+
+        for cid in self.data.circles:
+            contacts = await self.get_emergency_contacts(cid)
+            if contacts:
+                all_contacts[cid] = contacts
+
+        return all_contacts
+
+    async def get_trip_history(
+        self, cid: CircleID, mid: MemberID, limit: int = 10
+    ) -> list[helpers.TripData]:
+        """Get recent trip history for a member."""
+        trips: list[helpers.TripData] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return trips
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/drivereport/circle/{cid}/user/{mid}/trips"
+                params = {"limit": str(limit)}
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, params=params, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Trip history for %s: %s", mid, data)
+
+                        raw_trips = data.get("trips", [])
+                        if isinstance(raw_trips, list):
+                            for raw_trip in raw_trips:
+                                try:
+                                    trip = helpers.TripData.from_server(raw_trip)
+                                    trips.append(trip)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing trip: %s", err)
+
+                        if trips:
+                            return trips
+                    else:
+                        _LOGGER.debug("Trip history request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching trip history: %s", err)
+
+        return trips
+
+    async def get_geofence_zones(
+        self, cid: CircleID
+    ) -> list[helpers.GeofenceZone]:
+        """Get geofence zones for a circle."""
+        zones: list[helpers.GeofenceZone] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return zones
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v4/circles/{cid}/zones/"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Geofence zones for circle %s: %s", cid, data)
+
+                        raw_zones = data.get("zones", [])
+                        if isinstance(raw_zones, list):
+                            for raw_zone in raw_zones:
+                                try:
+                                    zone = helpers.GeofenceZone.from_server(raw_zone)
+                                    zones.append(zone)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing zone: %s", err)
+
+                        if zones:
+                            return zones
+                    else:
+                        _LOGGER.debug("Geofence zones request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching geofence zones: %s", err)
+
+        return zones
+
+    async def get_all_geofence_zones(self) -> dict[CircleID, list[helpers.GeofenceZone]]:
+        """Get all geofence zones from all circles."""
+        all_zones: dict[CircleID, list[helpers.GeofenceZone]] = {}
+
+        for cid in self.data.circles:
+            zones = await self.get_geofence_zones(cid)
+            if zones:
+                all_zones[cid] = zones
+
+        return all_zones
+
+    async def get_place_alerts(
+        self, cid: CircleID
+    ) -> list[helpers.PlaceAlert]:
+        """Get place arrival/departure alerts for a circle."""
+        alerts: list[helpers.PlaceAlert] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return alerts
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/circles/{cid}/places/alerts"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Place alerts for circle %s: %s", cid, data)
+
+                        raw_alerts = data.get("alerts", [])
+                        if isinstance(raw_alerts, list):
+                            for raw_alert in raw_alerts:
+                                try:
+                                    alert = helpers.PlaceAlert.from_server(raw_alert)
+                                    alerts.append(alert)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing alert: %s", err)
+
+                        if alerts:
+                            return alerts
+                    else:
+                        _LOGGER.debug("Place alerts request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching place alerts: %s", err)
+
+        return alerts
+
+    async def get_scheduled_alerts(
+        self, cid: CircleID, mid: MemberID
+    ) -> list[helpers.ScheduledAlert]:
+        """Get scheduled check-in alerts for a member."""
+        alerts: list[helpers.ScheduledAlert] = []
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return alerts
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v1/circles/{cid}/users/{mid}/scheduled/alerts"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Scheduled alerts for %s: %s", mid, data)
+
+                        raw_alerts = data.get("alerts", [])
+                        if isinstance(raw_alerts, list):
+                            for raw_alert in raw_alerts:
+                                try:
+                                    alert = helpers.ScheduledAlert.from_server(raw_alert)
+                                    alerts.append(alert)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing alert: %s", err)
+
+                        if alerts:
+                            return alerts
+                    else:
+                        _LOGGER.debug("Scheduled alerts request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching scheduled alerts: %s", err)
+
+        return alerts
+
+    async def get_member_role(
+        self, cid: CircleID, mid: MemberID
+    ) -> helpers.MemberRole | None:
+        """Get member's role in a circle."""
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return None
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/circles/{cid}/members/{mid}/role"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Member role for %s: %s", mid, data)
+                        return helpers.MemberRole.from_server(data)
+                    else:
+                        _LOGGER.debug("Member role request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching member role: %s", err)
+
+        return None
+
+    async def get_device_issues(self) -> list[helpers.DeviceIssue]:
+        """Get device issues/errors."""
+        issues: list[helpers.DeviceIssue] = []
+
+        for aid, acct_data in self._acct_data.items():
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v5/circles/devices/issues"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                async with acct_data.session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Device issues: %s", data)
+
+                        raw_issues = data.get("issues", [])
+                        if isinstance(raw_issues, list):
+                            for raw_issue in raw_issues:
+                                try:
+                                    issue = helpers.DeviceIssue.from_server(raw_issue)
+                                    issues.append(issue)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing issue: %s", err)
+
+                        if issues:
+                            return issues
+                    else:
+                        _LOGGER.debug("Device issues request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching device issues: %s", err)
+
+        return issues
+
+    async def get_user_profile(self) -> helpers.UserProfile | None:
+        """Get current user's profile."""
+        for aid, acct_data in self._acct_data.items():
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v3/users/me"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                async with acct_data.session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("User profile: %s", data)
+                        return helpers.UserProfile.from_server(data)
+                    else:
+                        _LOGGER.debug("User profile request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching user profile: %s", err)
+
+        return None
+
+    async def get_integrations(self) -> list[helpers.ConnectedIntegration]:
+        """Get connected integrations/apps."""
+        integrations: list[helpers.ConnectedIntegration] = []
+
+        for aid, acct_data in self._acct_data.items():
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/integrations"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                async with acct_data.session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Integrations: %s", data)
+
+                        raw_integrations = data.get("integrations", [])
+                        if isinstance(raw_integrations, list):
+                            for raw_int in raw_integrations:
+                                try:
+                                    integration = helpers.ConnectedIntegration.from_server(
+                                        raw_int
+                                    )
+                                    integrations.append(integration)
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.debug("Error parsing integration: %s", err)
+
+                        if integrations:
+                            return integrations
+                    else:
+                        _LOGGER.debug("Integrations request failed: %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching integrations: %s", err)
+
+        return integrations
+
+    async def send_jiobit_command(
+        self, device_id: str, cid: CircleID, command: str = "buzz"
+    ) -> bool:
+        """Send command to Jiobit device (e.g., buzz to find pet)."""
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return False
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/provider/jiobit/devices/{device_id}/circle/{cid}/command"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+                payload = {"command": command}
+
+                session = self._acct_data[aid].session
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status in (200, 201, 204):
+                        _LOGGER.info("Jiobit command '%s' sent to %s", command, device_id)
+                        return True
+                    else:
+                        _LOGGER.debug(
+                            "Jiobit command failed: %s - %s",
+                            resp.status,
+                            await resp.text(),
+                        )
+            except Exception as err:
+                _LOGGER.debug("Error sending Jiobit command: %s", err)
+
+        return False
 
     async def _client_request(
         self,
@@ -772,12 +1494,82 @@ class MemberDataUpdateCoordinator(DataUpdateCoordinator[MemberData]):
         return data
 
 
+class DeviceDataUpdateCoordinator(DataUpdateCoordinator[dict[DeviceID, DeviceData]]):
+    """Device data update coordinator for Tiles and pet GPS trackers."""
+
+    config_entry: ConfigEntry
+
+    # After this many consecutive 403 errors, disable device polling
+    MAX_CONSECUTIVE_403_ERRORS = 5
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        coordinator: CirclesMembersDataUpdateCoordinator,
+    ) -> None:
+        """Initialize data update coordinator."""
+        super().__init__(
+            hass, _LOGGER, name="Life360 Devices", update_interval=UPDATE_INTERVAL
+        )
+        if hasattr(self, "always_update"):
+            self.always_update = False
+        self.data: dict[DeviceID, DeviceData] = {}
+        self._coordinator = coordinator
+        self._consecutive_403_errors = 0
+        self._device_polling_disabled = False
+
+    async def _async_update_data(self) -> dict[DeviceID, DeviceData]:
+        """Fetch the latest device data from the source."""
+        # Skip if device polling has been disabled due to persistent 403 errors
+        if self._device_polling_disabled:
+            return self.data
+
+        try:
+            devices, got_403 = await self._coordinator.get_all_devices()
+
+            if got_403:
+                self._consecutive_403_errors += 1
+                if self._consecutive_403_errors >= self.MAX_CONSECUTIVE_403_ERRORS:
+                    self._device_polling_disabled = True
+                    _LOGGER.info(
+                        "Device tracking disabled after %d consecutive 403 errors. "
+                        "This usually means Tile/Jiobit tracking is not available for your account. "
+                        "Restart Home Assistant to retry.",
+                        self._consecutive_403_errors,
+                    )
+                elif self._consecutive_403_errors == 1:
+                    # Only log on first error to reduce spam
+                    _LOGGER.debug(
+                        "Device locations returned 403 Forbidden - "
+                        "Tile/Jiobit tracking may not be available for your subscription"
+                    )
+                return self.data
+            else:
+                # Reset error count on success
+                self._consecutive_403_errors = 0
+
+            if devices:
+                _LOGGER.debug("Got %d devices from Life360", len(devices))
+                # Send signal if devices changed
+                old_device_ids = set(self.data.keys())
+                new_device_ids = set(devices.keys())
+                if old_device_ids != new_device_ids:
+                    async_dispatcher_send(self.hass, SIGNAL_DEVICES_CHANGED)
+                return devices
+        except Exception as err:
+            _LOGGER.debug("Error fetching devices: %s", err)
+
+        # Return existing data on error
+        return self.data
+
+
 @dataclass
 class L360Coordinators:
     """Life360 data update coordinators."""
 
     coordinator: CirclesMembersDataUpdateCoordinator
     mem_coordinator: dict[MemberID, MemberDataUpdateCoordinator]
+    device_coordinator: DeviceDataUpdateCoordinator | None = None
 
 
 type L360ConfigEntry = ConfigEntry[L360Coordinators]

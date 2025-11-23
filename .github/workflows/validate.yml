@@ -1,8 +1,13 @@
 name: Validate
 
+# Disabled automatic triggers - uncomment to re-enable
+# on:
+#   pull_request:
+#   push:
+
+# Manual trigger only
 on:
-  pull_request:
-  push:
+  workflow_dispatch:
 
 permissions:
   contents: read

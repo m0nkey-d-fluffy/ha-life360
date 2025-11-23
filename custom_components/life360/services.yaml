@@ -1,5 +1,42 @@
 update_location:
+  name: Update Location
+  description: Request a location update for Life360 members. This typically causes the member's location to be updated every 5 seconds for about one minute.
   target:
     entity:
       integration: life360
       domain: device_tracker
+
+sync_places:
+  name: Get Life360 Places
+  description: Retrieve all Life360 Places and fire a 'life360_places' event with the data. Use this to see your Life360 places and manually create corresponding Home Assistant zones. Returns place names, coordinates, and radius.
+
+sync_geofence_zones:
+  name: Get Life360 Geofences
+  description: Retrieve all Life360 geofence zones and fire a 'life360_geofences' event with the data. Use this to see your Life360 geofences and manually create corresponding Home Assistant zones. Returns zone names, coordinates, radius, and type.
+
+get_emergency_contacts:
+  name: Get Emergency Contacts
+  description: Retrieve emergency contacts from all Life360 circles. The contacts are returned as service response data and also fired as a 'life360_emergency_contacts' event.
+
+get_integrations:
+  name: Get Connected Integrations
+  description: Retrieve all connected integrations/apps from Life360. Returns information about linked services like Tile, Jiobit, etc.
+
+buzz_jiobit:
+  name: Buzz Jiobit Device
+  description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound.
+  fields:
+    device_id:
+      name: Device ID
+      description: The Jiobit device ID to buzz
+      required: true
+      example: "dr123456"
+      selector:
+        text:
+    circle_id:
+      name: Circle ID
+      description: The Life360 circle ID the device belongs to
+      required: true
+      example: "abc123-def456"
+      selector:
+        text:

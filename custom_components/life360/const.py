@@ -6,6 +6,10 @@ from aiohttp import ClientTimeout
 
 DOMAIN = "life360"
 
+# API Configuration
+API_HOST = "api-cloudfront.life360.com"
+API_BASE_URL = f"https://{API_HOST}"
+
 ATTRIBUTION = "Data provided by life360.com"
 COMM_MAX_RETRIES = 4
 COMM_TIMEOUT = ClientTimeout(sock_connect=15, total=60)
@@ -36,8 +40,14 @@ CONF_SHOW_DRIVING = "driving"
 CONF_TOKEN_TYPE = "token_type"
 CONF_VERBOSITY = "verbosity"
 
+SERVICE_BUZZ_JIOBIT = "buzz_jiobit"
+SERVICE_GET_EMERGENCY_CONTACTS = "get_emergency_contacts"
+SERVICE_GET_INTEGRATIONS = "get_integrations"
+SERVICE_SYNC_GEOFENCE_ZONES = "sync_geofence_zones"
+SERVICE_SYNC_PLACES = "sync_places"
 SERVICE_UPDATE_LOCATION = "update_location"
 
 SIGNAL_ACCT_STATUS = "life360_acct_status"
+SIGNAL_DEVICES_CHANGED = "life360_devices_changed"
 SIGNAL_MEMBERS_CHANGED = "life360_members_changed"
 SIGNAL_UPDATE_LOCATION = "life360_update_location"

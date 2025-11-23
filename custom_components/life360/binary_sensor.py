@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from functools import cached_property, partial  # pylint: disable=hass-deprecated-import
 import logging
-from typing import cast
+from typing import Any, cast
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -14,10 +15,14 @@ from homeassistant.components.binary_sensor import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+    DataUpdateCoordinator,
+)
 
 from .const import ATTRIBUTION, SIGNAL_ACCT_STATUS
 from .coordinator import CirclesMembersDataUpdateCoordinator, L360ConfigEntry
-from .helpers import AccountID, ConfigOptions
+from .helpers import AccountID, CircleID, ConfigOptions, PlaceAlert
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,6 +59,23 @@ async def async_setup_entry(
 
     await process_config(hass, entry)
     entry.async_on_unload(entry.add_update_listener(process_config))
+
+    # Set up place alerts coordinator and sensors
+    alerts_coordinator = PlaceAlertsCoordinator(hass, coordinator)
+    await alerts_coordinator.async_config_entry_first_refresh()
+
+    alert_entities: list[PlaceAlertBinarySensor] = []
+    for cid, alerts in alerts_coordinator.data.items():
+        circle_data = coordinator.data.circles.get(cid)
+        circle_name = circle_data.name if circle_data else str(cid)
+        for alert in alerts:
+            alert_entities.append(
+                PlaceAlertBinarySensor(alerts_coordinator, cid, circle_name, alert)
+            )
+
+    if alert_entities:
+        _LOGGER.debug("Adding %d place alert sensors", len(alert_entities))
+        async_add_entities(alert_entities)
 
 
 class Life360BinarySensor(BinarySensorEntity):
@@ -117,3 +139,92 @@ class Life360BinarySensor(BinarySensorEntity):
 
         self._enabled = enabled
         self.async_write_ha_state()
+
+
+class PlaceAlertsCoordinator(DataUpdateCoordinator[dict[CircleID, list[PlaceAlert]]]):
+    """Coordinator for place alerts."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        coordinator: CirclesMembersDataUpdateCoordinator,
+    ) -> None:
+        """Initialize coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="Life360 Place Alerts",
+            update_interval=timedelta(hours=1),  # Alerts don't change often
+        )
+        self._coordinator = coordinator
+        self.data: dict[CircleID, list[PlaceAlert]] = {}
+
+    async def _async_update_data(self) -> dict[CircleID, list[PlaceAlert]]:
+        """Fetch place alerts for all circles."""
+        alerts: dict[CircleID, list[PlaceAlert]] = {}
+
+        for cid in self._coordinator.data.circles:
+            circle_alerts = await self._coordinator.get_place_alerts(cid)
+            if circle_alerts:
+                alerts[cid] = circle_alerts
+
+        return alerts
+
+
+class PlaceAlertBinarySensor(
+    CoordinatorEntity[PlaceAlertsCoordinator], BinarySensorEntity
+):
+    """Binary sensor for place alert status."""
+
+    _attr_attribution = ATTRIBUTION
+    _attr_device_class = BinarySensorDeviceClass.PRESENCE
+
+    def __init__(
+        self,
+        coordinator: PlaceAlertsCoordinator,
+        circle_id: CircleID,
+        circle_name: str,
+        alert: PlaceAlert,
+    ) -> None:
+        """Initialize binary sensor."""
+        super().__init__(coordinator)
+        self._circle_id = circle_id
+        self._alert = alert
+        self._attr_unique_id = f"alert_{alert.alert_id}"
+        self._attr_name = f"Life360 Alert: {alert.member_name} at {alert.place_name}"
+        self._attr_icon = (
+            "mdi:map-marker-alert" if alert.enabled else "mdi:map-marker-off"
+        )
+
+    @property
+    def is_on(self) -> bool:
+        """Return if alert is enabled."""
+        # Check if this alert still exists and is enabled
+        if self._circle_id not in self.coordinator.data:
+            return False
+        for alert in self.coordinator.data[self._circle_id]:
+            if alert.alert_id == self._alert.alert_id:
+                return alert.enabled
+        return False
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        return {
+            "alert_id": self._alert.alert_id,
+            "place_id": self._alert.place_id,
+            "place_name": self._alert.place_name,
+            "member_id": self._alert.member_id,
+            "member_name": self._alert.member_name,
+            "alert_type": self._alert.alert_type,
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        if self._circle_id not in self.coordinator.data:
+            return False
+        return any(
+            a.alert_id == self._alert.alert_id
+            for a in self.coordinator.data[self._circle_id]
+        )

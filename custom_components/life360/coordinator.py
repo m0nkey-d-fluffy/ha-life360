@@ -397,13 +397,17 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
     async def get_circle_devices(
         self, cid: CircleID
-    ) -> dict[DeviceID, DeviceData]:
-        """Get devices (Tiles, Jiobit) for a circle via direct API call."""
+    ) -> tuple[dict[DeviceID, DeviceData], int | None]:
+        """Get devices (Tiles, Jiobit) for a circle via direct API call.
+
+        Returns:
+            Tuple of (devices dict, HTTP status code if error or None if success)
+        """
         devices: dict[DeviceID, DeviceData] = {}
         circle_data = self.data.circles.get(cid)
         if not circle_data:
             _LOGGER.debug("get_circle_devices: Circle %s not found", cid)
-            return devices
+            return devices, None
 
         if self._options.verbosity >= 2:
             _LOGGER.debug("Fetching device locations for circle %s", cid)
@@ -464,35 +468,44 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                             err,
                                         )
 
-                        # If we got data, no need to try other accounts
-                        if devices:
+                        # Success - return devices (may be empty if no devices linked)
+                        if self._options.verbosity >= 1:
                             _LOGGER.debug(
                                 "Found %d devices in circle %s", len(devices), cid
                             )
-                            return devices
+                        return devices, None
                     else:
                         resp_text = await resp.text()
-                        _LOGGER.warning(
-                            "Device locations request failed: HTTP %s - %s",
-                            resp.status,
-                            resp_text[:200] if self._options.verbosity >= 2 else "[see debug log]",
-                        )
+                        if self._options.verbosity >= 2:
+                            _LOGGER.debug(
+                                "Device locations request failed: HTTP %s - %s",
+                                resp.status,
+                                resp_text[:200],
+                            )
+                        return devices, resp.status
             except Exception as err:
-                _LOGGER.warning("Error fetching device locations: %s", err)
+                _LOGGER.debug("Error fetching device locations: %s", err)
                 if self._options.verbosity >= 3:
                     _LOGGER.debug("Exception details", exc_info=True)
 
-        return devices
+        return devices, None
 
-    async def get_all_devices(self) -> dict[DeviceID, DeviceData]:
-        """Get all devices from all circles."""
+    async def get_all_devices(self) -> tuple[dict[DeviceID, DeviceData], bool]:
+        """Get all devices from all circles.
+
+        Returns:
+            Tuple of (devices dict, True if 403 forbidden was encountered)
+        """
         all_devices: dict[DeviceID, DeviceData] = {}
+        got_403 = False
 
         for cid in self.data.circles:
-            circle_devices = await self.get_circle_devices(cid)
+            circle_devices, status = await self.get_circle_devices(cid)
             all_devices.update(circle_devices)
+            if status == 403:
+                got_403 = True
 
-        return all_devices
+        return all_devices, got_403
 
     async def get_circle_places(
         self, cid: CircleID
@@ -1472,6 +1485,9 @@ class DeviceDataUpdateCoordinator(DataUpdateCoordinator[dict[DeviceID, DeviceDat
 
     config_entry: ConfigEntry
 
+    # After this many consecutive 403 errors, disable device polling
+    MAX_CONSECUTIVE_403_ERRORS = 5
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -1485,11 +1501,39 @@ class DeviceDataUpdateCoordinator(DataUpdateCoordinator[dict[DeviceID, DeviceDat
             self.always_update = False
         self.data: dict[DeviceID, DeviceData] = {}
         self._coordinator = coordinator
+        self._consecutive_403_errors = 0
+        self._device_polling_disabled = False
 
     async def _async_update_data(self) -> dict[DeviceID, DeviceData]:
         """Fetch the latest device data from the source."""
+        # Skip if device polling has been disabled due to persistent 403 errors
+        if self._device_polling_disabled:
+            return self.data
+
         try:
-            devices = await self._coordinator.get_all_devices()
+            devices, got_403 = await self._coordinator.get_all_devices()
+
+            if got_403:
+                self._consecutive_403_errors += 1
+                if self._consecutive_403_errors >= self.MAX_CONSECUTIVE_403_ERRORS:
+                    self._device_polling_disabled = True
+                    _LOGGER.info(
+                        "Device tracking disabled after %d consecutive 403 errors. "
+                        "This usually means Tile/Jiobit tracking is not available for your account. "
+                        "Restart Home Assistant to retry.",
+                        self._consecutive_403_errors,
+                    )
+                elif self._consecutive_403_errors == 1:
+                    # Only log on first error to reduce spam
+                    _LOGGER.debug(
+                        "Device locations returned 403 Forbidden - "
+                        "Tile/Jiobit tracking may not be available for your subscription"
+                    )
+                return self.data
+            else:
+                # Reset error count on success
+                self._consecutive_403_errors = 0
+
             if devices:
                 _LOGGER.debug("Got %d devices from Life360", len(devices))
                 # Send signal if devices changed

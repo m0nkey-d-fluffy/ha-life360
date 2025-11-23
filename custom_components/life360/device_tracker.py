@@ -40,12 +40,25 @@ from .const import (
     ATTR_SPEED,
     ATTR_WIFI_ON,
     ATTRIBUTION,
+    SIGNAL_DEVICES_CHANGED,
     SIGNAL_MEMBERS_CHANGED,
     SIGNAL_UPDATE_LOCATION,
     STATE_DRIVING,
 )
-from .coordinator import L360ConfigEntry, MemberDataUpdateCoordinator
-from .helpers import ConfigOptions, MemberData, MemberID, NoLocReason
+from .coordinator import (
+    DeviceDataUpdateCoordinator,
+    L360ConfigEntry,
+    MemberDataUpdateCoordinator,
+)
+from .helpers import (
+    ConfigOptions,
+    DeviceData,
+    DeviceID,
+    DeviceType,
+    MemberData,
+    MemberID,
+    NoLocReason,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,6 +120,61 @@ async def async_setup_entry(
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_UPDATE_LOCATION, update_location)
     )
+
+    # Set up device tracker entities for Tiles and pet GPS trackers
+    device_coordinator = entry.runtime_data.device_coordinator
+    if device_coordinator:
+        device_entities: dict[DeviceID, Life360DeviceDeviceTracker] = {}
+
+        async def async_process_devices() -> None:
+            """Process devices (Tiles, pet GPS)."""
+            device_ids = set(device_coordinator.data.keys())
+            cur_device_ids = set(device_entities)
+            del_device_ids = cur_device_ids - device_ids
+            add_device_ids = device_ids - cur_device_ids
+
+            if del_device_ids:
+                old_device_entities: list[Life360DeviceDeviceTracker] = []
+                names: list[str] = []
+                for device_id in del_device_ids:
+                    entity = device_entities.pop(device_id)
+                    old_device_entities.append(entity)
+                    names.append(str(entity))
+                _LOGGER.debug("Deleting device entities: %s", ", ".join(names))
+                await asyncio.gather(
+                    *(
+                        entity.async_remove()
+                        for entity in old_device_entities
+                        if entity.enabled
+                    )
+                )
+
+            if add_device_ids:
+                new_device_entities: list[Life360DeviceDeviceTracker] = []
+                names = []
+                for device_id in add_device_ids:
+                    device_data = device_coordinator.data[device_id]
+                    entity = Life360DeviceDeviceTracker(
+                        device_coordinator, device_id, device_data
+                    )
+                    device_entities[device_id] = entity
+                    new_device_entities.append(entity)
+                    names.append(device_data.name)
+                _LOGGER.debug("Adding device entities: %s", ", ".join(names))
+                async_add_entities(new_device_entities)
+
+        await async_process_devices()
+        entry.async_on_unload(
+            async_dispatcher_connect(
+                hass, SIGNAL_DEVICES_CHANGED, async_process_devices
+            )
+        )
+        # Also refresh devices when coordinator updates
+        entry.async_on_unload(
+            device_coordinator.async_add_listener(
+                lambda: hass.async_create_task(async_process_devices())
+            )
+        )
 
 
 class Life360DeviceTracker(
@@ -425,3 +493,111 @@ class Life360DeviceTracker(
 
         # Re-process current data.
         self._handle_coordinator_update(config_changed=True)
+
+
+class Life360DeviceDeviceTracker(
+    CoordinatorEntity[DeviceDataUpdateCoordinator], TrackerEntity
+):
+    """Life360 Device Tracker for Tiles and pet GPS devices."""
+
+    _attr_attribution = ATTRIBUTION
+    _attr_unique_id: DeviceID
+
+    def __init__(
+        self,
+        coordinator: DeviceDataUpdateCoordinator,
+        device_id: DeviceID,
+        device_data: DeviceData,
+    ) -> None:
+        """Initialize device tracker for a device."""
+        super().__init__(coordinator)
+        self._device_id = device_id
+        self._attr_unique_id = device_id
+        self._update_from_data(device_data)
+
+    def _update_from_data(self, device_data: DeviceData) -> None:
+        """Update entity attributes from device data."""
+        self._device_data = device_data
+        self._attr_name = device_data.name
+
+        # Set entity picture if available
+        if device_data.entity_picture:
+            self._attr_entity_picture = device_data.entity_picture
+
+    def __str__(self) -> str:
+        """Return string representation."""
+        return f"Life360 Device: {self._device_data.name}"
+
+    @property
+    def device_type_name(self) -> str:
+        """Return the device type as a human-readable string."""
+        if self._device_data.device_type == DeviceType.TILE:
+            return "Tile"
+        elif self._device_data.device_type == DeviceType.JIOBIT:
+            return "Pet GPS"
+        return "Device"
+
+    @property
+    def source_type(self) -> SourceType:
+        """Return the source type."""
+        return SourceType.GPS
+
+    @property
+    def latitude(self) -> float | None:
+        """Return latitude value of the device."""
+        if self._device_data.location:
+            return self._device_data.location.latitude
+        return None
+
+    @property
+    def longitude(self) -> float | None:
+        """Return longitude value of the device."""
+        if self._device_data.location:
+            return self._device_data.location.longitude
+        return None
+
+    @property
+    def location_accuracy(self) -> int:
+        """Return the location accuracy of the device."""
+        if self._device_data.location and self._device_data.location.accuracy:
+            return self._device_data.location.accuracy
+        return 0
+
+    @property
+    def battery_level(self) -> int | None:
+        """Return the battery level of the device."""
+        return self._device_data.battery_level
+
+    @property
+    def state(self) -> str:
+        """Return the state of the device."""
+        if self._device_data.location:
+            return STATE_NOT_HOME
+        return STATE_UNKNOWN
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any]:
+        """Return device state attributes."""
+        attrs: dict[str, Any] = {
+            "device_type": self.device_type_name,
+            "device_id": self._device_id,
+        }
+
+        if self._device_data.battery_status:
+            attrs["battery_status"] = self._device_data.battery_status
+
+        if self._device_data.location:
+            attrs[ATTR_LAST_SEEN] = dt_util.as_local(
+                self._device_data.location.last_updated
+            )
+            if self._device_data.location.accuracy:
+                attrs[ATTR_GPS_ACCURACY] = self._device_data.location.accuracy
+
+        return attrs
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        if self._device_id in self.coordinator.data:
+            self._update_from_data(self.coordinator.data[self._device_id])
+        self.async_write_ha_state()

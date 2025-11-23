@@ -25,12 +25,18 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     DOMAIN,
+    SERVICE_BUZZ_JIOBIT,
+    SERVICE_GET_EMERGENCY_CONTACTS,
+    SERVICE_GET_INTEGRATIONS,
+    SERVICE_SYNC_GEOFENCE_ZONES,
+    SERVICE_SYNC_PLACES,
     SERVICE_UPDATE_LOCATION,
     SIGNAL_MEMBERS_CHANGED,
     SIGNAL_UPDATE_LOCATION,
 )
 from .coordinator import (
     CirclesMembersDataUpdateCoordinator,
+    DeviceDataUpdateCoordinator,
     L360ConfigEntry,
     L360Coordinators,
     MemberDataUpdateCoordinator,
@@ -41,7 +47,7 @@ from .helpers import Life360Store, MemberID
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 _LOGGER = logging.getLogger(__name__)
-_PLATFORMS = [Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER]
+_PLATFORMS = [Platform.BINARY_SENSOR, Platform.DEVICE_TRACKER, Platform.SENSOR]
 
 _UPDATE_LOCATION_SCHEMA = vol.Schema(
     {
@@ -62,6 +68,252 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(
         DOMAIN, SERVICE_UPDATE_LOCATION, update_location, _UPDATE_LOCATION_SCHEMA
+    )
+
+    async def sync_places_to_zones(call: ServiceCall) -> dict:
+        """Sync Life360 places to Home Assistant zones."""
+        _LOGGER.debug("Service %s called", SERVICE_SYNC_PLACES)
+
+        # Get all config entries for Life360
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return {"places": []}
+
+        all_places = []
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Fetching places from coordinator")
+            places = await coordinator.get_all_places()
+            _LOGGER.debug("Retrieved %d places from API", len(places))
+
+            for place_id, place in places.items():
+                place_data = {
+                    "name": place.name,
+                    "latitude": place.latitude,
+                    "longitude": place.longitude,
+                    "radius": place.radius,
+                    "place_id": place.place_id,
+                }
+                all_places.append(place_data)
+                _LOGGER.debug(
+                    "Life360 Place: %s at (%s, %s) radius %sm",
+                    place.name,
+                    place.latitude,
+                    place.longitude,
+                    place.radius,
+                )
+
+        # Fire an event with place data for automations to use
+        hass.bus.async_fire(
+            f"{DOMAIN}_places",
+            {"places": all_places},
+        )
+        _LOGGER.info(
+            "Service %s completed: Found %d Life360 places",
+            SERVICE_SYNC_PLACES,
+            len(all_places),
+        )
+        return {"places": all_places}
+
+    hass.services.async_register(DOMAIN, SERVICE_SYNC_PLACES, sync_places_to_zones)
+
+    async def sync_geofence_zones(call: ServiceCall) -> dict:
+        """Sync Life360 geofence zones to Home Assistant zones."""
+        _LOGGER.debug("Service %s called", SERVICE_SYNC_GEOFENCE_ZONES)
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return {"zones": []}
+
+        all_geofences = []
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Fetching geofence zones from coordinator")
+            all_zones = await coordinator.get_all_geofence_zones()
+            _LOGGER.debug("Retrieved geofences from %d circles", len(all_zones))
+
+            for cid, zones in all_zones.items():
+                circle_data = coordinator.data.circles.get(cid)
+                circle_name = circle_data.name if circle_data else str(cid)
+                _LOGGER.debug("Processing %d zones from circle %s", len(zones), circle_name)
+
+                for zone in zones:
+                    zone_data = {
+                        "name": zone.name,
+                        "latitude": zone.latitude,
+                        "longitude": zone.longitude,
+                        "radius": zone.radius,
+                        "zone_id": zone.zone_id,
+                        "zone_type": zone.zone_type,
+                        "circle": circle_name,
+                        "active": zone.active,
+                    }
+                    all_geofences.append(zone_data)
+                    _LOGGER.debug(
+                        "Life360 Geofence: %s at (%s, %s) radius %sm in %s",
+                        zone.name,
+                        zone.latitude,
+                        zone.longitude,
+                        zone.radius,
+                        circle_name,
+                    )
+
+        # Fire an event with geofence data for automations to use
+        hass.bus.async_fire(
+            f"{DOMAIN}_geofences",
+            {"zones": all_geofences},
+        )
+        _LOGGER.info(
+            "Service %s completed: Found %d Life360 geofences",
+            SERVICE_SYNC_GEOFENCE_ZONES,
+            len(all_geofences),
+        )
+        return {"zones": all_geofences}
+
+    hass.services.async_register(DOMAIN, SERVICE_SYNC_GEOFENCE_ZONES, sync_geofence_zones)
+
+    async def get_emergency_contacts(call: ServiceCall) -> dict:
+        """Get emergency contacts from all Life360 circles."""
+        _LOGGER.debug("Service %s called", SERVICE_GET_EMERGENCY_CONTACTS)
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return {"contacts": []}
+
+        all_contacts = []
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Fetching emergency contacts from coordinator")
+            contacts_by_circle = await coordinator.get_all_emergency_contacts()
+            _LOGGER.debug("Retrieved contacts from %d circles", len(contacts_by_circle))
+
+            for cid, contacts in contacts_by_circle.items():
+                circle_data = coordinator.data.circles.get(cid)
+                circle_name = circle_data.name if circle_data else str(cid)
+                _LOGGER.debug("Circle %s has %d emergency contacts", circle_name, len(contacts))
+
+                for contact in contacts:
+                    all_contacts.append({
+                        "circle": circle_name,
+                        "name": contact.name,
+                        "phone": contact.phone,
+                        "relationship": contact.relationship,
+                    })
+
+        # Fire an event with the contacts data
+        hass.bus.async_fire(
+            f"{DOMAIN}_emergency_contacts",
+            {"contacts": all_contacts},
+        )
+        _LOGGER.info("Service %s completed: Retrieved %d emergency contacts", SERVICE_GET_EMERGENCY_CONTACTS, len(all_contacts))
+        return {"contacts": all_contacts}
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_GET_EMERGENCY_CONTACTS, get_emergency_contacts
+    )
+
+    async def get_integrations(call: ServiceCall) -> dict:
+        """Get connected integrations/apps."""
+        _LOGGER.debug("Service %s called", SERVICE_GET_INTEGRATIONS)
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return {"integrations": []}
+
+        all_integrations = []
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Fetching connected integrations from coordinator")
+            integrations = await coordinator.get_integrations()
+            _LOGGER.debug("Retrieved %d integrations", len(integrations))
+
+            for integration in integrations:
+                _LOGGER.debug(
+                    "Integration: %s (%s) - connected=%s",
+                    integration.name,
+                    integration.provider,
+                    integration.connected,
+                )
+                all_integrations.append({
+                    "id": integration.integration_id,
+                    "name": integration.name,
+                    "provider": integration.provider,
+                    "connected": integration.connected,
+                    "status": integration.status,
+                })
+
+        hass.bus.async_fire(
+            f"{DOMAIN}_integrations",
+            {"integrations": all_integrations},
+        )
+        _LOGGER.info("Service %s completed: Retrieved %d connected integrations", SERVICE_GET_INTEGRATIONS, len(all_integrations))
+        return {"integrations": all_integrations}
+
+    hass.services.async_register(DOMAIN, SERVICE_GET_INTEGRATIONS, get_integrations)
+
+    _BUZZ_JIOBIT_SCHEMA = vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Required("circle_id"): cv.string,
+    })
+
+    async def buzz_jiobit(call: ServiceCall) -> None:
+        """Send buzz command to a Jiobit device to help find pet."""
+        device_id = call.data["device_id"]
+        circle_id = call.data["circle_id"]
+
+        _LOGGER.debug(
+            "Service %s called: device_id=%s, circle_id=%s",
+            SERVICE_BUZZ_JIOBIT,
+            device_id,
+            circle_id,
+        )
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Sending buzz command to Jiobit device %s", device_id)
+            from .helpers import CircleID
+            success = await coordinator.send_jiobit_command(
+                device_id, CircleID(circle_id), "buzz"
+            )
+            if success:
+                _LOGGER.info("Service %s completed: Buzz command sent to Jiobit device %s", SERVICE_BUZZ_JIOBIT, device_id)
+                return
+            else:
+                _LOGGER.debug("Buzz command failed for device %s via this coordinator", device_id)
+
+        _LOGGER.warning("Service %s failed: Could not send buzz command to Jiobit device %s", SERVICE_BUZZ_JIOBIT, device_id)
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_BUZZ_JIOBIT, buzz_jiobit, _BUZZ_JIOBIT_SCHEMA
     )
 
     return True
@@ -127,7 +379,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> bool
 
     await async_process_data()
     entry.async_on_unload(coordinator.async_add_listener(process_data))
-    entry.runtime_data = L360Coordinators(coordinator, mem_coordinator)
+
+    # Create device coordinator for Tiles and pet GPS trackers
+    device_coordinator = DeviceDataUpdateCoordinator(hass, coordinator)
+    await device_coordinator.async_config_entry_first_refresh()
+
+    entry.runtime_data = L360Coordinators(
+        coordinator, mem_coordinator, device_coordinator
+    )
 
     # Set up components for our platforms.
     await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
@@ -142,13 +401,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> boo
     # will be canceled after the "on unload" processing. But by then, resources those
     # tasks were using may have disappeared. So, shut down the coordinators now to give
     # them a chance to shutdown the background tasks themselves.
-    await asyncio.gather(
+    shutdown_coros = [
         entry.runtime_data.coordinator.async_shutdown(),
         *(
             mem_crd.async_shutdown()
             for mem_crd in entry.runtime_data.mem_coordinator.values()
         ),
-    )
+    ]
+    if entry.runtime_data.device_coordinator:
+        shutdown_coros.append(entry.runtime_data.device_coordinator.async_shutdown())
+    await asyncio.gather(*shutdown_coros)
     # Unload components for our platforms.
     return await hass.config_entries.async_unload_platforms(entry, _PLATFORMS)
 

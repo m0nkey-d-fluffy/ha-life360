@@ -448,6 +448,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+                # Generate a stable x-device-id for Home Assistant
+                # This mimics what the Android app sends (e.g., "androideDb6Dr3GQuOfOkQqpaiV6t")
+                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
@@ -455,6 +459,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "Cache-Control": "no-cache",
                     # CloudEvents specification headers
                     "circleid": cid,  # Circle ID goes in circleid header
+                    "x-device-id": x_device_id,  # Required device identifier
                     "ce-type": "com.life360.cloud.platform.devices.locations.v1",
                     "ce-id": ce_id,  # Random UUID per request
                     "ce-specversion": "1.0",
@@ -1231,6 +1236,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+                # Generate a stable x-device-id for Home Assistant
+                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
@@ -1238,6 +1246,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "User-Agent": API_USER_AGENT,
                     # CloudEvents headers
                     "circleid": cid,
+                    "x-device-id": x_device_id,  # Required device identifier
                     "ce-type": "com.life360.cloud.device.commands.provider.action.invoke.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
@@ -1405,12 +1414,16 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+                # Generate a stable x-device-id for Home Assistant
+                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
                     # Circle-scoped endpoint uses circleid header
                     "circleid": cid,
+                    "x-device-id": x_device_id,  # Required device identifier
                     "ce-type": "com.life360.cloud.platform.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
@@ -1419,7 +1432,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching device metadata from %s with circleid=%s", url, cid)
+                _LOGGER.debug("Fetching device metadata from %s with circleid=%s x-device-id=%s", url, cid, x_device_id)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:

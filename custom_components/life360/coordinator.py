@@ -455,14 +455,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         # Handle nested 'data' wrapper in response
                         device_data = data.get("data", data) if isinstance(data, dict) else data
 
-                        # Always log response structure at debug level
+                        # Always log full response to debug device issues
                         _LOGGER.debug(
-                            "Device locations response: status=200, outer_keys=%s, inner_keys=%s",
-                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                            list(device_data.keys()) if isinstance(device_data, dict) else type(device_data).__name__,
+                            "Device locations response: status=200, full_response=%s",
+                            data,
                         )
-                        if self._options.verbosity >= 3:
-                            _LOGGER.debug("Full device locations response: %s", data)
 
                         # Parse devices from response - devices are in 'items' array
                         items = device_data.get("items", []) if isinstance(device_data, dict) else []

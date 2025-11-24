@@ -457,42 +457,38 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                         # Always log response structure at debug level
                         _LOGGER.debug(
-                            "Device locations response: status=200, outer_keys=%s, inner_keys=%s, tile_count=%d, jiobit_count=%d",
+                            "Device locations response: status=200, outer_keys=%s, inner_keys=%s",
                             list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                             list(device_data.keys()) if isinstance(device_data, dict) else type(device_data).__name__,
-                            len(device_data.get("tile", [])) if isinstance(device_data, dict) else 0,
-                            len(device_data.get("jiobit", [])) if isinstance(device_data, dict) else 0,
                         )
                         if self._options.verbosity >= 3:
                             _LOGGER.debug("Full device locations response: %s", data)
 
-                        # Parse devices from response
-                        for provider in ["tile", "jiobit"]:
-                            provider_devices = device_data.get(provider, []) if isinstance(device_data, dict) else []
-                            if isinstance(provider_devices, list):
-                                for raw_device in provider_devices:
-                                    try:
-                                        device = DeviceData.from_server(
-                                            raw_device, provider
-                                        )
-                                        devices[DeviceID(device.device_id)] = device
-                                        _LOGGER.debug(
-                                            "Parsed %s device: %s (%s)",
-                                            provider,
-                                            device.name,
-                                            device.device_id,
-                                        )
-                                    except (KeyError, ValueError) as err:
-                                        _LOGGER.warning(
-                                            "Error parsing %s device: %s - raw=%s - %s",
-                                            provider,
-                                            raw_device.get("name", raw_device.get("deviceName", "unknown")),
-                                            raw_device,
-                                            err,
-                                        )
+                        # Parse devices from response - devices are in 'items' array
+                        items = device_data.get("items", []) if isinstance(device_data, dict) else []
+                        if isinstance(items, list):
+                            for raw_device in items:
+                                try:
+                                    # Determine provider from device data
+                                    provider = raw_device.get("provider", raw_device.get("type", "unknown")).lower()
+                                    device = DeviceData.from_server(raw_device, provider)
+                                    devices[DeviceID(device.device_id)] = device
+                                    _LOGGER.debug(
+                                        "Parsed %s device: %s (%s)",
+                                        provider,
+                                        device.name,
+                                        device.device_id,
+                                    )
+                                except (KeyError, ValueError) as err:
+                                    _LOGGER.warning(
+                                        "Error parsing device: %s - raw=%s - %s",
+                                        raw_device.get("name", raw_device.get("deviceName", "unknown")),
+                                        raw_device,
+                                        err,
+                                    )
 
                         # Success - return devices (may be empty if no devices linked)
-                        _LOGGER.debug("Found %d total devices", len(devices))
+                        _LOGGER.debug("Found %d total devices from %d items", len(devices), len(items))
                         return devices, None
                     else:
                         resp_text = await resp.text()

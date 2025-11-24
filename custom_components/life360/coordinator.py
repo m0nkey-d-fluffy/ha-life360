@@ -1384,12 +1384,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         )
 
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
-        """Fetch and cache device metadata (names, avatars, categories) from /v5/circles/devices.
+        """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
 
-        This endpoint returns devices in a circle with metadata including user-defined names.
+        This endpoint returns all Tile/Jiobit devices for the user with their names and metadata.
+        The cid parameter is used to get account credentials but the endpoint returns all devices.
 
         Args:
-            cid: Circle ID
+            cid: Circle ID (used to get account credentials)
 
         Returns:
             True if metadata was fetched successfully
@@ -1407,9 +1408,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Use /v5/circles/devices endpoint which is scoped to a circle
-                # This endpoint should return device names and metadata
-                url = f"{API_BASE_URL}/v5/circles/devices"
+                # Use /v6/devices endpoint to get Tile/Jiobit device names and metadata
+                # This endpoint does NOT use circleid - it returns all devices for the user
+                url = f"{API_BASE_URL}/v6/devices?activationStates=activated,pending,pending_disassociated"
 
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -1421,10 +1422,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
-                    # Circle-scoped endpoint uses circleid header
-                    "circleid": cid,
-                    "x-device-id": x_device_id,  # Required device identifier
-                    "ce-type": "com.life360.cloud.platform.devices.v1",
+                    # /v6/devices endpoint uses x-device-id but NOT circleid
+                    "x-device-id": x_device_id,
+                    "ce-type": "com.life360.device.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,
@@ -1432,20 +1432,39 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching device metadata from %s with circleid=%s x-device-id=%s", url, cid, x_device_id)
+                _LOGGER.debug("Fetching device metadata from %s with x-device-id=%s", url, x_device_id)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         _LOGGER.debug("Device metadata response: %s", data)
 
-                        # Parse response - structure may be data.items[] or just items[]
+                        # Parse response - structure is data.items[]
                         items = data.get("data", {}).get("items", []) if isinstance(data.get("data"), dict) else data.get("items", [])
                         if not items and isinstance(data, list):
                             items = data
 
                         for item in items:
-                            # Get device ID from item level
+                            # Handle two types of items:
+                            # 1. "device" items: direct with id, name, avatar, category, typeData
+                            # 2. "profile" items: have data.trackerId linking to device, data.name
+                            item_type = item.get("type", "device")
+
+                            if item_type == "profile":
+                                # Profile item (e.g., Jiobit pet profile)
+                                # Name is in data.name, linked device is in data.trackerId
+                                profile_data = item.get("data", {})
+                                tracker_id = profile_data.get("trackerId", "")
+                                name = profile_data.get("name", "")
+                                if tracker_id and name:
+                                    self._device_name_cache[tracker_id] = name
+                                    _LOGGER.debug(
+                                        "Cached device name from profile: %s -> %s",
+                                        tracker_id, name,
+                                    )
+                                continue
+
+                            # Device item - get device ID
                             device_id = item.get("id") or item.get("deviceId", "")
                             if not device_id:
                                 continue

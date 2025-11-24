@@ -411,6 +411,15 @@ class DeviceData(ExtraStoredData):
             raw_device.get("displayName") or
             raw_device.get("title")
         )
+
+        # If no explicit name, try to use category as a friendly name
+        # Categories like "KEYS", "WALLET", "CAT", "REMOTE", "PET" work well
+        if not name:
+            category = raw_device.get("category", "")
+            if category:
+                # Capitalize category nicely: "KEYS" -> "Keys", "REMOTE" -> "Remote"
+                name = category.capitalize()
+
         if not name:
             # Create a friendly name from provider and short device ID
             short_id = device_id[-8:] if len(device_id) > 8 else device_id

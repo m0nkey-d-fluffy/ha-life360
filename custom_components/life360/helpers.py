@@ -399,7 +399,14 @@ class DeviceData(ExtraStoredData):
     ) -> Self:
         """Initialize from device data from server."""
         device_id = raw_device.get("id") or raw_device.get("deviceId", "")
-        name = raw_device.get("name") or raw_device.get("deviceName", "Unknown Device")
+
+        # Try to get name from various fields, fallback to provider + short ID
+        name = raw_device.get("name") or raw_device.get("deviceName")
+        if not name:
+            # Create a friendly name from provider and short device ID
+            short_id = device_id[-8:] if len(device_id) > 8 else device_id
+            provider_name = provider.capitalize() if provider else "Device"
+            name = f"{provider_name} {short_id}"
 
         # Determine device type
         if provider == "jiobit":

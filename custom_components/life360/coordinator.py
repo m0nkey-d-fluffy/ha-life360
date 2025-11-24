@@ -116,6 +116,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self._tile_auth_cache: dict[str, bytes] = {}
         # Cache for Tile BLE device IDs (Life360 device ID -> BLE device ID)
         self._tile_ble_id_cache: dict[str, str] = {}
+        # Cache for device names (Life360 device ID -> name)
+        self._device_name_cache: dict[str, str] = {}
+        # Cache for device avatars (Life360 device ID -> avatar URL)
+        self._device_avatar_cache: dict[str, str] = {}
+        # Cache for device categories (Life360 device ID -> category)
+        self._device_category_cache: dict[str, str] = {}
 
     async def async_shutdown(self) -> None:
         """Cancel any scheduled call, and ignore new runs."""
@@ -418,6 +424,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             _LOGGER.debug("get_circle_devices: Circle %s not found", cid)
             return devices, None
 
+        # Fetch device metadata first to get names, avatars, categories
+        # This populates the cache that we use below
+        if not self._device_name_cache:
+            await self._fetch_device_metadata(cid)
+
         if self._options.verbosity >= 2:
             _LOGGER.debug("Fetching device locations for circle %s", cid)
 
@@ -487,6 +498,30 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                     # Preserve the item-level id if present
                                     if "id" in raw_device:
                                         flat_device["id"] = raw_device["id"]
+
+                                    # Get device ID for cache lookup
+                                    device_id = (
+                                        flat_device.get("deviceId") or
+                                        flat_device.get("id") or
+                                        raw_device.get("deviceId") or
+                                        ""
+                                    )
+
+                                    # Inject cached metadata (name, avatar, category)
+                                    # The locations endpoint doesn't return names
+                                    if device_id and device_id in self._device_name_cache:
+                                        if not flat_device.get("name"):
+                                            flat_device["name"] = self._device_name_cache[device_id]
+                                            _LOGGER.debug(
+                                                "Using cached name for %s: %s",
+                                                device_id, flat_device["name"],
+                                            )
+                                    if device_id and device_id in self._device_avatar_cache:
+                                        if not flat_device.get("avatar"):
+                                            flat_device["avatar"] = self._device_avatar_cache[device_id]
+                                    if device_id and device_id in self._device_category_cache:
+                                        if not flat_device.get("category"):
+                                            flat_device["category"] = self._device_category_cache[device_id]
 
                                     # Determine provider from device data
                                     provider = (
@@ -1339,24 +1374,18 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             device_id, cid, provider, feature_id=30, enable=enable,
         )
 
-    async def _get_tile_auth_data(
-        self, device_id: str, cid: CircleID
-    ) -> tuple[bytes | None, str | None]:
-        """Get Tile authentication key and BLE device ID.
+    async def _fetch_device_metadata(self, cid: CircleID) -> bool:
+        """Fetch and cache device metadata (names, avatars, categories) from tileDeviceSettings.
 
         Args:
-            device_id: Life360 device ID
+            cid: Circle ID
 
         Returns:
-            Tuple of (auth_key bytes, ble_device_id) or (None, None) if not found
+            True if metadata was fetched successfully
         """
-        # Check cache first
-        if device_id in self._tile_auth_cache and device_id in self._tile_ble_id_cache:
-            return self._tile_auth_cache[device_id], self._tile_ble_id_cache[device_id]
-
         circle_data = self.data.circles.get(cid)
         if not circle_data:
-            return None, None
+            return False
 
         for aid in circle_data.aids:
             if aid not in self._acct_data:
@@ -1367,7 +1396,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Fetch Tile device settings which contain auth keys
+                # Fetch device settings which contain names, avatars, categories
                 url = f"{API_BASE_URL}/v4/settings/tileDeviceSettings"
 
                 ce_id = str(uuid.uuid4())
@@ -1386,55 +1415,94 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching Tile auth data from %s", url)
+                _LOGGER.debug("Fetching device metadata from %s", url)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        _LOGGER.debug("Tile settings response: %s", data)
+                        _LOGGER.debug("Device metadata response: %s", data)
 
-                        # Parse response - structure is data.items[].data.typeData
+                        # Parse response - structure is data.items[]
+                        # Each item has: id, name, provider, category, avatar, typeData
                         items = data.get("data", {}).get("items", [])
                         for item in items:
-                            item_data = item.get("data", {})
-                            type_data = item_data.get("typeData", {})
+                            # Get device ID from item level
+                            device_id = item.get("id", "")
+                            if not device_id:
+                                continue
+
+                            # Cache name, avatar, category
+                            name = item.get("name")
+                            if name:
+                                self._device_name_cache[device_id] = name
+                                _LOGGER.debug(
+                                    "Cached device name: %s -> %s",
+                                    device_id, name,
+                                )
+
+                            avatar = item.get("avatar")
+                            if avatar:
+                                self._device_avatar_cache[device_id] = avatar
+
+                            category = item.get("category")
+                            if category:
+                                self._device_category_cache[device_id] = category
+
+                            # Also cache auth key and BLE device ID for Tile devices
+                            type_data = item.get("typeData", {})
                             tile_device_id = type_data.get("deviceId", "")
                             auth_key_b64 = type_data.get("authKey", "")
 
-                            if not tile_device_id or not auth_key_b64:
-                                continue
+                            if tile_device_id and auth_key_b64:
+                                try:
+                                    auth_key = base64.b64decode(auth_key_b64)
+                                    self._tile_auth_cache[device_id] = auth_key
+                                    self._tile_ble_id_cache[device_id] = tile_device_id
+                                    # Also cache by BLE device ID for lookup
+                                    self._tile_auth_cache[tile_device_id] = auth_key
+                                    self._tile_ble_id_cache[tile_device_id] = tile_device_id
+                                except Exception:
+                                    _LOGGER.debug("Failed to decode auth key for %s", device_id)
 
-                            # Decode base64 auth key
-                            try:
-                                auth_key = base64.b64decode(auth_key_b64)
-                            except Exception:
-                                _LOGGER.debug("Failed to decode auth key for %s", tile_device_id)
-                                continue
-
-                            # Cache for this device - use item ID as Life360 device ID
-                            item_id = item.get("id", tile_device_id)
-                            self._tile_auth_cache[item_id] = auth_key
-                            self._tile_ble_id_cache[item_id] = tile_device_id
-
-                            # Also cache by BLE device ID for lookup
-                            self._tile_auth_cache[tile_device_id] = auth_key
-                            self._tile_ble_id_cache[tile_device_id] = tile_device_id
-
-                            _LOGGER.debug(
-                                "Cached Tile auth data: id=%s ble_id=%s",
-                                item_id, tile_device_id,
-                            )
-
-                        # Check if we now have the requested device
-                        if device_id in self._tile_auth_cache:
-                            return (
-                                self._tile_auth_cache[device_id],
-                                self._tile_ble_id_cache.get(device_id),
-                            )
+                        _LOGGER.debug(
+                            "Cached metadata for %d devices", len(self._device_name_cache)
+                        )
+                        return True
+                    elif resp.status == 404:
+                        # Feature not available for this account - not an error
+                        _LOGGER.debug("Device metadata endpoint returned 404 - feature not available")
+                        return True
                     else:
-                        _LOGGER.debug("Tile settings request failed: HTTP %s", resp.status)
+                        _LOGGER.debug("Device metadata request failed: HTTP %s", resp.status)
             except Exception as err:
-                _LOGGER.debug("Error fetching Tile auth data: %s", err)
+                _LOGGER.debug("Error fetching device metadata: %s", err)
+
+        return False
+
+    async def _get_tile_auth_data(
+        self, device_id: str, cid: CircleID
+    ) -> tuple[bytes | None, str | None]:
+        """Get Tile authentication key and BLE device ID.
+
+        Args:
+            device_id: Life360 device ID
+
+        Returns:
+            Tuple of (auth_key bytes, ble_device_id) or (None, None) if not found
+        """
+        # Check cache first
+        if device_id in self._tile_auth_cache and device_id in self._tile_ble_id_cache:
+            return self._tile_auth_cache[device_id], self._tile_ble_id_cache[device_id]
+
+        # Try to fetch metadata which will populate the cache
+        await self._fetch_device_metadata(cid)
+
+        # Check cache again
+        if device_id in self._tile_auth_cache:
+            return (
+                self._tile_auth_cache[device_id],
+                self._tile_ble_id_cache.get(device_id),
+            )
 
         return None, None
 

@@ -11,3 +11,4 @@ venv/
 # Sensitive traffic capture files
 flows.txt
 *.flow
+*.7z

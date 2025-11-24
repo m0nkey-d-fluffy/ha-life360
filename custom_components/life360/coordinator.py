@@ -1375,10 +1375,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         )
 
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
-        """Fetch and cache device metadata (names, avatars, categories) from /v5/circles/devices.
+        """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
+
+        This endpoint returns ALL devices (Tile, Jiobit, phones) with full metadata
+        including user-defined names, categories, and avatars.
 
         Args:
-            cid: Circle ID
+            cid: Circle ID (used to get account credentials)
 
         Returns:
             True if metadata was fetched successfully
@@ -1396,9 +1399,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Fetch device metadata from /v5/circles/devices endpoint
-                # This returns full device info including names, avatars, categories
-                url = f"{API_BASE_URL}/v5/circles/devices"
+                # Fetch device metadata from /v6/devices endpoint
+                # This returns ALL devices including Tile/Jiobit with user-defined names
+                url = f"{API_BASE_URL}/v6/devices?activationStates=activated%2Cpending%2Cpending_disassociated"
 
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -1407,8 +1410,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
-                    "circleid": cid,
-                    "ce-type": "com.life360.cloud.platform.devices.v1",
+                    "ce-type": "com.life360.device.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,

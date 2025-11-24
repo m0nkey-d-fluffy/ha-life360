@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from collections.abc import Callable, Coroutine, Iterable
 from contextlib import suppress
 from copy import deepcopy
@@ -110,6 +111,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self.config_entry.async_on_unload(
             self.config_entry.add_update_listener(self._config_entry_updated)
         )
+
+        # Cache for Tile authentication keys (Life360 device ID -> auth key bytes)
+        self._tile_auth_cache: dict[str, bytes] = {}
+        # Cache for Tile BLE device IDs (Life360 device ID -> BLE device ID)
+        self._tile_ble_id_cache: dict[str, str] = {}
 
     async def async_shutdown(self) -> None:
         """Cancel any scheduled call, and ignore new runs."""
@@ -1123,6 +1129,358 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 _LOGGER.debug("Error sending Jiobit command: %s", err)
 
         return False
+
+    async def send_device_command(
+        self,
+        device_id: str,
+        cid: CircleID,
+        provider: str,
+        feature_id: int,
+        enable: bool = True,
+        duration: int = 30,
+        strength: int = 2,
+    ) -> bool:
+        """Send command to a device (Tile or Jiobit).
+
+        Args:
+            device_id: Device ID
+            cid: Circle ID
+            provider: Device provider (tile, jiobit)
+            feature_id: Feature ID (1=ring/buzz, 30=light)
+            enable: Enable or disable the feature
+            duration: Duration in seconds
+            strength: Strength level (1-3)
+
+        Returns:
+            True if command was sent successfully
+        """
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("send_device_command: Circle %s not found", cid)
+            return False
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/provider/{provider}/devices/{device_id}/circle/{cid}/command"
+
+                # Generate CloudEvents headers
+                ce_id = str(uuid.uuid4())
+                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                    # CloudEvents headers
+                    "circleid": cid,
+                    "ce-type": "com.life360.cloud.platform.device.command.v1",
+                    "ce-id": ce_id,
+                    "ce-specversion": "1.0",
+                    "ce-time": ce_time,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+                }
+
+                # Command payload structure from captured traffic
+                payload = {
+                    "data": {
+                        "commands": [
+                            {
+                                "args": {
+                                    "duration": duration,
+                                    "delivered": False,
+                                    "featureId": feature_id,
+                                    "strength": strength,
+                                },
+                                "command": "deviceUiFeatureEnable" if enable else "deviceUiFeatureDisable",
+                            }
+                        ]
+                    }
+                }
+
+                session = self._acct_data[aid].session
+                _LOGGER.debug(
+                    "POST %s with provider=%s feature=%d enable=%s",
+                    url, provider, feature_id, enable,
+                )
+
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        _LOGGER.info(
+                            "Device command sent: %s feature=%d to %s/%s",
+                            "enable" if enable else "disable",
+                            feature_id,
+                            provider,
+                            device_id,
+                        )
+                        return True
+                    else:
+                        resp_text = await resp.text()
+                        _LOGGER.debug(
+                            "Device command failed: HTTP %s - %s",
+                            resp.status,
+                            resp_text[:500],
+                        )
+            except Exception as err:
+                _LOGGER.debug("Error sending device command: %s", err)
+
+        return False
+
+    async def ring_device(
+        self,
+        device_id: str,
+        cid: CircleID,
+        provider: str = "jiobit",
+        duration: int = 30,
+        strength: int = 2,
+    ) -> bool:
+        """Ring/buzz a device to help locate it.
+
+        Args:
+            device_id: Device ID
+            cid: Circle ID
+            provider: Device provider (tile, jiobit)
+            duration: Ring duration in seconds
+            strength: Ring strength (1=low, 2=med, 3=high)
+
+        Returns:
+            True if ring command was sent successfully
+        """
+        # For Tile devices, try BLE first if available
+        if provider == "tile":
+            ble_success = await self._ring_tile_ble(device_id, cid)
+            if ble_success:
+                return True
+            _LOGGER.debug("Tile BLE ring failed, falling back to server API")
+
+        # Feature ID 1 = ring/buzz
+        return await self.send_device_command(
+            device_id, cid, provider, feature_id=1, enable=True,
+            duration=duration, strength=strength,
+        )
+
+    async def stop_ring_device(
+        self,
+        device_id: str,
+        cid: CircleID,
+        provider: str = "jiobit",
+    ) -> bool:
+        """Stop ringing/buzzing a device.
+
+        Args:
+            device_id: Device ID
+            cid: Circle ID
+            provider: Device provider (tile, jiobit)
+
+        Returns:
+            True if stop command was sent successfully
+        """
+        # For Tile devices, try BLE first if available
+        if provider == "tile":
+            ble_success = await self._stop_ring_tile_ble(device_id, cid)
+            if ble_success:
+                return True
+            _LOGGER.debug("Tile BLE stop failed, falling back to server API")
+
+        # Feature ID 1 = ring/buzz, enable=False to stop
+        return await self.send_device_command(
+            device_id, cid, provider, feature_id=1, enable=False,
+        )
+
+    async def toggle_device_light(
+        self,
+        device_id: str,
+        cid: CircleID,
+        provider: str = "jiobit",
+        enable: bool = True,
+    ) -> bool:
+        """Toggle the light on a device (Jiobit only).
+
+        Args:
+            device_id: Device ID
+            cid: Circle ID
+            provider: Device provider
+            enable: Turn light on or off
+
+        Returns:
+            True if command was sent successfully
+        """
+        # Feature ID 30 = light
+        return await self.send_device_command(
+            device_id, cid, provider, feature_id=30, enable=enable,
+        )
+
+    async def _get_tile_auth_data(
+        self, device_id: str, cid: CircleID
+    ) -> tuple[bytes | None, str | None]:
+        """Get Tile authentication key and BLE device ID.
+
+        Args:
+            device_id: Life360 device ID
+
+        Returns:
+            Tuple of (auth_key bytes, ble_device_id) or (None, None) if not found
+        """
+        # Check cache first
+        if device_id in self._tile_auth_cache and device_id in self._tile_ble_id_cache:
+            return self._tile_auth_cache[device_id], self._tile_ble_id_cache[device_id]
+
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return None, None
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                # Fetch Tile device settings which contain auth keys
+                url = f"{API_BASE_URL}/v4/settings/tileDeviceSettings"
+
+                ce_id = str(uuid.uuid4())
+                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                    "circleid": cid,
+                    "ce-type": "com.life360.cloud.platform.settings.tile.v1",
+                    "ce-id": ce_id,
+                    "ce-specversion": "1.0",
+                    "ce-time": ce_time,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+                }
+
+                session = self._acct_data[aid].session
+                _LOGGER.debug("Fetching Tile auth data from %s", url)
+
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Tile settings response: %s", data)
+
+                        # Parse response - structure is data.items[].data.typeData
+                        items = data.get("data", {}).get("items", [])
+                        for item in items:
+                            item_data = item.get("data", {})
+                            type_data = item_data.get("typeData", {})
+                            tile_device_id = type_data.get("deviceId", "")
+                            auth_key_b64 = type_data.get("authKey", "")
+
+                            if not tile_device_id or not auth_key_b64:
+                                continue
+
+                            # Decode base64 auth key
+                            try:
+                                auth_key = base64.b64decode(auth_key_b64)
+                            except Exception:
+                                _LOGGER.debug("Failed to decode auth key for %s", tile_device_id)
+                                continue
+
+                            # Cache for this device - use item ID as Life360 device ID
+                            item_id = item.get("id", tile_device_id)
+                            self._tile_auth_cache[item_id] = auth_key
+                            self._tile_ble_id_cache[item_id] = tile_device_id
+
+                            # Also cache by BLE device ID for lookup
+                            self._tile_auth_cache[tile_device_id] = auth_key
+                            self._tile_ble_id_cache[tile_device_id] = tile_device_id
+
+                            _LOGGER.debug(
+                                "Cached Tile auth data: id=%s ble_id=%s",
+                                item_id, tile_device_id,
+                            )
+
+                        # Check if we now have the requested device
+                        if device_id in self._tile_auth_cache:
+                            return (
+                                self._tile_auth_cache[device_id],
+                                self._tile_ble_id_cache.get(device_id),
+                            )
+                    else:
+                        _LOGGER.debug("Tile settings request failed: HTTP %s", resp.status)
+            except Exception as err:
+                _LOGGER.debug("Error fetching Tile auth data: %s", err)
+
+        return None, None
+
+    async def _ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
+        """Ring a Tile device via Bluetooth LE.
+
+        Args:
+            device_id: Life360 device ID
+            cid: Circle ID (needed to fetch auth key)
+
+        Returns:
+            True if BLE ring was successful
+        """
+        try:
+            from .tile_ble import ring_tile_ble, BLEAK_AVAILABLE, TileVolume
+        except ImportError:
+            _LOGGER.debug("Tile BLE module not available")
+            return False
+
+        if not BLEAK_AVAILABLE:
+            _LOGGER.debug("bleak library not available for Tile BLE")
+            return False
+
+        auth_key, ble_device_id = await self._get_tile_auth_data(device_id, cid)
+        if not auth_key or not ble_device_id:
+            _LOGGER.debug("No Tile auth data found for device %s", device_id)
+            return False
+
+        _LOGGER.debug("Attempting BLE ring for Tile %s", ble_device_id)
+        return await ring_tile_ble(
+            ble_device_id,
+            auth_key,
+            volume=TileVolume.MED,
+            duration_seconds=30,
+            scan_timeout=10.0,
+        )
+
+    async def _stop_ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
+        """Stop ringing a Tile device via Bluetooth LE.
+
+        Args:
+            device_id: Life360 device ID
+            cid: Circle ID
+
+        Returns:
+            True if BLE stop was successful
+        """
+        try:
+            from .tile_ble import stop_ring_tile_ble, BLEAK_AVAILABLE
+        except ImportError:
+            _LOGGER.debug("Tile BLE module not available")
+            return False
+
+        if not BLEAK_AVAILABLE:
+            _LOGGER.debug("bleak library not available for Tile BLE")
+            return False
+
+        auth_key, ble_device_id = await self._get_tile_auth_data(device_id, cid)
+        if not auth_key or not ble_device_id:
+            _LOGGER.debug("No Tile auth data found for device %s", device_id)
+            return False
+
+        _LOGGER.debug("Attempting BLE stop ring for Tile %s", ble_device_id)
+        return await stop_ring_tile_ble(
+            ble_device_id,
+            auth_key,
+            scan_timeout=10.0,
+        )
 
     async def _client_request(
         self,

@@ -1238,7 +1238,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "User-Agent": API_USER_AGENT,
                     # CloudEvents headers
                     "circleid": cid,
-                    "ce-type": "com.life360.cloud.platform.device.command.v1",
+                    "ce-type": "com.life360.cloud.device.commands.provider.action.invoke.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,

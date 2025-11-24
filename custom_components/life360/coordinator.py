@@ -7,11 +7,13 @@ from collections.abc import Callable, Coroutine, Iterable
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import partial
 import logging
 from math import ceil
 from typing import Any, TypeVar, TypeVarTuple, cast
+import uuid
 
 from aiohttp import ClientSession
 from life360 import Life360Error, LoginError, NotFound, NotModified, RateLimited
@@ -422,19 +424,29 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Build the request - include circle headers as required by API
+                # Build the request with CloudEvents headers as required by API
                 url = f"{API_BASE_URL}/v5/circles/devices/locations?providers[]=tile&providers[]=jiobit"
+
+                # Generate CloudEvents headers per request
+                ce_id = str(uuid.uuid4())
+                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
                     "Cache-Control": "no-cache",
-                    "ce-id": cid,  # Circle ID required by API
-                    "ce-type": "circles",  # Circle type required by API
+                    # CloudEvents specification headers
+                    "circleid": cid,  # Circle ID goes in circleid header
+                    "ce-type": "com.life360.cloud.platform.devices.locations.v1",
+                    "ce-id": ce_id,  # Random UUID per request
+                    "ce-specversion": "1.0",
+                    "ce-time": ce_time,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("GET %s with ce-id=%s ce-type=circles", url, cid)
+                _LOGGER.debug("GET %s with circleid=%s ce-type=%s", url, cid, headers["ce-type"])
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:

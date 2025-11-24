@@ -430,11 +430,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "User-Agent": API_USER_AGENT,
                     "Cache-Control": "no-cache",
                     "ce-id": cid,  # Circle ID required by API
-                    "ce-type": "circle",  # Circle type required by API
+                    "ce-type": "circles",  # Circle type required by API
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("GET %s with ce-id=%s ce-type=circle", url, cid)
+                _LOGGER.debug("GET %s with ce-id=%s ce-type=circles", url, cid)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:

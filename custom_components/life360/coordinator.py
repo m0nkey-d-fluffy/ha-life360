@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Callable, Coroutine, Iterable
+import hashlib
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1406,15 +1407,22 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+                # Generate a stable device ID from the account ID for x-device-id header
+                # The API requires this header for authentication
+                # Format similar to Android: "homeassistant" + hash(account_id)[:20]
+                account_hash = hashlib.sha256(aid.encode()).hexdigest()[:20]
+                x_device_id = f"homeassistant{account_hash}"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
-                    "User-Agent": API_USER_AGENT,
+                    "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
                     "ce-type": "com.life360.device.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,
-                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}/{x_device_id}",
+                    "x-device-id": x_device_id,
                 }
 
                 session = self._acct_data[aid].session

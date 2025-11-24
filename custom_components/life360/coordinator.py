@@ -1343,7 +1343,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         """Ring a Tile device via Bluetooth LE.
 
         Args:
-            device_id: The Tile device ID
+            device_id: The Tile device ID (Life360 ID)
             cid: The circle ID
 
         Returns:
@@ -1356,15 +1356,20 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 _LOGGER.debug("BLE library (bleak) not available")
                 return False
 
-            # Get Tile auth key from stored data
-            auth_key = await self._get_tile_auth_key(device_id, cid)
-            if not auth_key:
-                _LOGGER.debug("No auth key found for Tile %s", device_id)
+            # Get Tile auth key and BLE device ID
+            tile_data = await self._get_tile_auth_data(device_id, cid)
+            if not tile_data:
+                _LOGGER.debug("No auth data found for Tile %s", device_id)
                 return False
 
-            _LOGGER.info("Attempting to ring Tile %s via BLE", device_id)
+            auth_key, ble_device_id = tile_data
+            _LOGGER.info(
+                "Attempting to ring Tile %s (BLE: %s) via Bluetooth",
+                device_id,
+                ble_device_id,
+            )
             success = await ring_tile_ble(
-                tile_id=device_id,
+                tile_id=ble_device_id,  # Use BLE device ID for scanning
                 auth_key=auth_key,
                 volume=TileVolume.MED,
                 duration_seconds=30,
@@ -1383,7 +1388,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         """Stop ringing a Tile device via Bluetooth LE.
 
         Args:
-            device_id: The Tile device ID
+            device_id: The Tile device ID (Life360 ID)
             cid: The circle ID
 
         Returns:
@@ -1395,13 +1400,18 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if not BLEAK_AVAILABLE:
                 return False
 
-            auth_key = await self._get_tile_auth_key(device_id, cid)
-            if not auth_key:
+            tile_data = await self._get_tile_auth_data(device_id, cid)
+            if not tile_data:
                 return False
 
-            _LOGGER.info("Attempting to stop Tile %s via BLE", device_id)
+            auth_key, ble_device_id = tile_data
+            _LOGGER.info(
+                "Attempting to stop Tile %s (BLE: %s) via Bluetooth",
+                device_id,
+                ble_device_id,
+            )
             return await stop_ring_tile_ble(
-                tile_id=device_id,
+                tile_id=ble_device_id,  # Use BLE device ID for scanning
                 auth_key=auth_key,
                 scan_timeout=15.0,
             )
@@ -1412,20 +1422,55 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             _LOGGER.debug("Error stopping Tile via BLE: %s", err)
             return False
 
+    async def _get_tile_auth_data(
+        self, device_id: str, cid: CircleID
+    ) -> tuple[bytes, str] | None:
+        """Get authentication data for a Tile device.
+
+        Args:
+            device_id: The Tile device ID (Life360 ID)
+            cid: The circle ID
+
+        Returns:
+            Tuple of (auth_key, ble_device_id) or None if not found
+        """
+        # Check cache first
+        cache_key = f"{device_id}_data"
+        if hasattr(self, "_tile_data_cache"):
+            if cache_key in self._tile_data_cache:
+                return self._tile_data_cache[cache_key]
+        else:
+            self._tile_data_cache: dict[str, tuple[bytes, str]] = {}
+
+        # Fetch fresh data
+        auth_key = await self._get_tile_auth_key(device_id, cid)
+        if not auth_key:
+            return None
+
+        # Get the BLE device ID from cache (populated by _get_tile_auth_key)
+        ble_device_id = getattr(self, "_tile_ble_id_cache", {}).get(device_id, device_id)
+
+        result = (auth_key, ble_device_id)
+        self._tile_data_cache[cache_key] = result
+        return result
+
     async def _get_tile_auth_key(
         self, device_id: str, cid: CircleID
     ) -> bytes | None:
         """Get the authentication key for a Tile device.
 
-        This retrieves the auth key from the Tile settings API.
+        This retrieves the auth key from the Life360 API which stores
+        Tile device settings including the BLE auth key.
 
         Args:
-            device_id: The Tile device ID
+            device_id: The Tile device ID (from Life360, e.g., "drc4b7c38f-...")
             cid: The circle ID
 
         Returns:
             16-byte auth key or None if not found
         """
+        import base64
+
         # Check cached tile auth data first
         if hasattr(self, "_tile_auth_cache"):
             if device_id in self._tile_auth_cache:
@@ -1447,7 +1492,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Tile device settings endpoint
+                # Life360 Tile device settings endpoint
                 url = f"{API_BASE_URL}/v4/settings/tileDeviceSettings"
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
@@ -1458,23 +1503,58 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 session = self._acct_data[aid].session
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        _LOGGER.debug("Tile settings response: %s", data)
+                        response_data = await resp.json()
+                        _LOGGER.debug("Tile settings response received")
 
-                        # Look for auth key in response
-                        # The structure varies - check common patterns
-                        tiles = data.get("tiles", data.get("devices", []))
-                        if isinstance(tiles, list):
-                            for tile in tiles:
-                                tile_id = tile.get("tile_id", tile.get("tileId", tile.get("id", "")))
-                                # Normalize for comparison
-                                if self._normalize_tile_id(tile_id) == self._normalize_tile_id(device_id):
-                                    auth_key_hex = tile.get("auth_key", tile.get("authKey", ""))
-                                    if auth_key_hex:
-                                        auth_key = bytes.fromhex(auth_key_hex)
+                        # Parse the response structure:
+                        # {"data": {"items": [{"type": "device", "data": {"typeData": {"deviceId": "...", "authKey": "..."}}}]}}
+                        data_obj = response_data.get("data", response_data)
+                        items = data_obj.get("items", [])
+
+                        for item in items:
+                            # Handle both structures:
+                            # 1. item.data.typeData.deviceId (nested)
+                            # 2. item.typeData.deviceId (flat)
+                            item_data = item.get("data", item)
+                            type_data = item_data.get("typeData", {})
+
+                            # Get the BLE device ID (hex MAC address)
+                            ble_device_id = type_data.get("deviceId", "")
+                            # Get the Life360 device ID
+                            life360_id = item_data.get("id", item.get("id", ""))
+
+                            # Match by Life360 ID or BLE device ID
+                            if (self._normalize_tile_id(life360_id) == self._normalize_tile_id(device_id) or
+                                self._normalize_tile_id(ble_device_id) == self._normalize_tile_id(device_id)):
+
+                                auth_key_b64 = type_data.get("authKey", "")
+                                if auth_key_b64:
+                                    try:
+                                        # Auth key is base64 encoded
+                                        auth_key = base64.b64decode(auth_key_b64)
+                                        # Cache auth key by both IDs for future lookups
                                         self._tile_auth_cache[device_id] = auth_key
-                                        _LOGGER.debug("Found auth key for Tile %s", device_id)
+                                        if life360_id:
+                                            self._tile_auth_cache[life360_id] = auth_key
+                                        if ble_device_id:
+                                            self._tile_auth_cache[ble_device_id] = auth_key
+
+                                        # Cache BLE device ID mapping
+                                        if not hasattr(self, "_tile_ble_id_cache"):
+                                            self._tile_ble_id_cache: dict[str, str] = {}
+                                        if ble_device_id:
+                                            self._tile_ble_id_cache[device_id] = ble_device_id
+                                            if life360_id:
+                                                self._tile_ble_id_cache[life360_id] = ble_device_id
+
+                                        _LOGGER.info(
+                                            "Found auth key for Tile %s (BLE: %s)",
+                                            life360_id or device_id,
+                                            ble_device_id,
+                                        )
                                         return auth_key
+                                    except Exception as decode_err:
+                                        _LOGGER.debug("Error decoding auth key: %s", decode_err)
                     else:
                         _LOGGER.debug("Tile settings request failed: HTTP %s", resp.status)
 

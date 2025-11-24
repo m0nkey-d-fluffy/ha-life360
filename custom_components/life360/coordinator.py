@@ -122,6 +122,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self._device_avatar_cache: dict[str, str] = {}
         # Cache for device categories (Life360 device ID -> category)
         self._device_category_cache: dict[str, str] = {}
+        # Cache for registered device ID (for API requests requiring x-device-id)
+        self._registered_device_id: str | None = None
+        self._device_registration_attempted: bool = False
 
     async def async_shutdown(self) -> None:
         """Cancel any scheduled call, and ignore new runs."""
@@ -448,9 +451,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                # Generate a stable x-device-id for Home Assistant
-                # This mimics what the Android app sends (e.g., "androideDb6Dr3GQuOfOkQqpaiV6t")
-                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+                # Use registered device ID if available, otherwise generate one
+                x_device_id = self._registered_device_id or f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
 
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
@@ -468,7 +470,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("GET %s with circleid=%s ce-type=%s", url, cid, headers["ce-type"])
+                _LOGGER.debug("GET %s with circleid=%s ce-type=%s x-device-id=%s", url, cid, headers["ce-type"], x_device_id)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
@@ -1236,8 +1238,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                # Generate a stable x-device-id for Home Assistant
-                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+                # Use registered device ID if available, otherwise generate one
+                x_device_id = self._registered_device_id or f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
 
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
@@ -1383,6 +1385,105 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             device_id, cid, provider, feature_id=30, enable=enable,
         )
 
+    async def _get_or_register_device_id(
+        self, aid: AccountID, acct: helpers.AccountDetails
+    ) -> str | None:
+        """Get a registered device ID for API requests, registering if needed.
+
+        The /v6/devices endpoint requires a valid x-device-id header that has been
+        registered with Life360. This method attempts to register Home Assistant
+        as a device if we don't have a cached ID.
+
+        Args:
+            aid: Account ID
+            acct: Account details with authorization
+
+        Returns:
+            Registered device ID string, or None if registration failed
+        """
+        # Return cached ID if available
+        if self._registered_device_id:
+            return self._registered_device_id
+
+        # Only attempt registration once per session
+        if self._device_registration_attempted:
+            return None
+
+        self._device_registration_attempted = True
+
+        if aid not in self._acct_data:
+            return None
+
+        try:
+            # Register Home Assistant as a "device" with Life360
+            # This mimics what the mobile apps do to get a valid x-device-id
+            url = f"{API_BASE_URL}/v3/users/devices"
+
+            # Generate a unique but stable device ID for this Home Assistant instance
+            # Format similar to Android: "androidXXXXXXXXXXXXXXXXXXXXXXXXX"
+            # We use "hass" prefix to identify it's from Home Assistant
+            entry_id = self.config_entry.entry_id.replace("-", "")
+            device_id = f"hass{entry_id[:24]}"
+
+            ce_id = str(uuid.uuid4())
+            ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+            headers = {
+                "Authorization": f"Bearer {acct.authorization}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": API_USER_AGENT,
+                "ce-type": "com.life360.user.devices.v1",
+                "ce-id": ce_id,
+                "ce-specversion": "1.0",
+                "ce-time": ce_time,
+                "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+            }
+
+            # Device registration payload - minimal info to register
+            payload = {
+                "deviceId": device_id,
+                "os": "HomeAssistant",
+                "model": "Home Assistant",
+                "manufacturer": "Home Assistant",
+                "osVersion": "1.0",
+                "appVersion": "1.0",
+                "pushToken": "",  # Not using push notifications
+                "deviceType": "other",
+            }
+
+            session = self._acct_data[aid].session
+            _LOGGER.debug("Registering Home Assistant as device: %s", device_id)
+
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status in (200, 201):
+                    data = await resp.json()
+                    _LOGGER.debug("Device registration response: %s", data)
+                    # The response should contain the device ID
+                    self._registered_device_id = data.get("deviceId", device_id)
+                    _LOGGER.info(
+                        "Registered Home Assistant with Life360 as device: %s",
+                        self._registered_device_id,
+                    )
+                    return self._registered_device_id
+                elif resp.status == 409:
+                    # Conflict - device already registered, this is actually good!
+                    # Use our generated ID since it's already in the system
+                    self._registered_device_id = device_id
+                    _LOGGER.debug("Device already registered, using: %s", device_id)
+                    return self._registered_device_id
+                else:
+                    resp_text = await resp.text()
+                    _LOGGER.debug(
+                        "Device registration failed: HTTP %s - %s",
+                        resp.status,
+                        resp_text[:200],
+                    )
+        except Exception as err:
+            _LOGGER.debug("Error registering device: %s", err)
+
+        return None
+
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
         """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
 
@@ -1407,6 +1508,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if not acct:
                 continue
 
+            # First try to get registered device ID, or register one if needed
+            registered_device_id = await self._get_or_register_device_id(aid, acct)
+
             try:
                 # Use /v6/devices endpoint to get Tile/Jiobit device names and metadata
                 # This endpoint does NOT use circleid - it returns all devices for the user
@@ -1415,15 +1519,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                # Generate a stable x-device-id for Home Assistant
-                x_device_id = f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
-
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
-                    # /v6/devices endpoint uses x-device-id but NOT circleid
-                    "x-device-id": x_device_id,
                     "ce-type": "com.life360.device.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
@@ -1431,8 +1530,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
                 }
 
+                # Only add x-device-id if we have a registered one
+                if registered_device_id:
+                    headers["x-device-id"] = registered_device_id
+
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching device metadata from %s with x-device-id=%s", url, x_device_id)
+                _LOGGER.debug("Fetching device metadata from %s with x-device-id=%s", url, registered_device_id or "none")
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:

@@ -398,6 +398,70 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         # Can be NO_DATA or NOT_FOUND.
         return raw_member
 
+    async def _get_device_metadata(
+        self, cid: CircleID, aid: str, session: Any, acct: Any
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch device metadata (names, categories, avatars) from /v5/circles/devices.
+
+        Returns:
+            Dict mapping device ID to metadata dict with name, category, avatar, etc.
+        """
+        metadata: dict[str, dict[str, Any]] = {}
+
+        try:
+            url = f"{API_BASE_URL}/v5/circles/devices"
+
+            ce_id = str(uuid.uuid4())
+            ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+            headers = {
+                "Authorization": f"Bearer {acct.authorization}",
+                "Accept": "application/json",
+                "User-Agent": API_USER_AGENT,
+                "Cache-Control": "no-cache",
+                "circleid": cid,
+                "ce-type": "com.life360.cloud.platform.devices.v1",
+                "ce-id": ce_id,
+                "ce-specversion": "1.0",
+                "ce-time": ce_time,
+                "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+            }
+
+            _LOGGER.debug("GET %s for device metadata", url)
+
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    device_data = data.get("data", data) if isinstance(data, dict) else data
+                    items = device_data.get("items", []) if isinstance(device_data, dict) else []
+
+                    for item in items:
+                        if isinstance(item, dict) and "id" in item:
+                            device_id = item["id"]
+                            metadata[device_id] = {
+                                "name": item.get("name"),
+                                "provider": item.get("provider"),
+                                "type": item.get("type"),
+                                "category": item.get("category"),
+                                "avatar": item.get("avatar"),
+                                "activationState": item.get("activationState"),
+                            }
+                            _LOGGER.debug(
+                                "Device metadata: id=%s name=%s provider=%s category=%s",
+                                device_id,
+                                item.get("name"),
+                                item.get("provider"),
+                                item.get("category"),
+                            )
+
+                    _LOGGER.debug("Fetched metadata for %d devices", len(metadata))
+                else:
+                    _LOGGER.debug("Device metadata request returned HTTP %s", resp.status)
+        except Exception as err:
+            _LOGGER.debug("Error fetching device metadata: %s", err)
+
+        return metadata
+
     async def get_circle_devices(
         self, cid: CircleID
     ) -> tuple[dict[DeviceID, DeviceData], int | None]:
@@ -423,6 +487,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if not acct:
                 continue
 
+            session = self._acct_data[aid].session
+
+            # First fetch device metadata (names) from /v5/circles/devices
+            device_metadata = await self._get_device_metadata(cid, aid, session, acct)
+
             try:
                 # Build the request with CloudEvents headers as required by API
                 url = f"{API_BASE_URL}/v5/circles/devices/locations?providers[]=tile&providers[]=jiobit"
@@ -445,7 +514,6 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
                 }
 
-                session = self._acct_data[aid].session
                 _LOGGER.debug("GET %s with circleid=%s ce-type=%s", url, cid, headers["ce-type"])
 
                 async with session.get(url, headers=headers) as resp:
@@ -466,6 +534,28 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         if isinstance(items, list):
                             for raw_device in items:
                                 try:
+                                    # Get device ID to look up metadata
+                                    device_id = raw_device.get("deviceId") or raw_device.get("id", "")
+
+                                    # Merge metadata (name, category, etc.) if available
+                                    if device_id in device_metadata:
+                                        meta = device_metadata[device_id]
+                                        # Add metadata fields to raw_device for parsing
+                                        if meta.get("name") and not raw_device.get("name"):
+                                            raw_device["name"] = meta["name"]
+                                        if meta.get("category") and not raw_device.get("category"):
+                                            raw_device["category"] = meta["category"]
+                                        if meta.get("avatar") and not raw_device.get("avatar"):
+                                            raw_device["avatar"] = meta["avatar"]
+                                        if meta.get("provider") and not raw_device.get("provider"):
+                                            raw_device["provider"] = meta["provider"]
+
+                                    # Log all keys in device for debugging
+                                    _LOGGER.debug(
+                                        "Raw device keys: %s, raw_device=%s",
+                                        list(raw_device.keys()) if isinstance(raw_device, dict) else "not a dict",
+                                        raw_device,
+                                    )
                                     # Determine provider from device data
                                     provider = raw_device.get("provider", raw_device.get("type", "unknown")).lower()
                                     device = DeviceData.from_server(raw_device, provider)
@@ -1082,12 +1172,33 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         return integrations
 
-    async def send_jiobit_command(
-        self, device_id: str, cid: CircleID, command: str = "buzz"
+    async def send_device_command(
+        self,
+        device_id: str,
+        cid: CircleID,
+        provider: str,
+        feature_id: int,
+        enable: bool = True,
+        duration: int = 30,
+        strength: int = 2,
     ) -> bool:
-        """Send command to Jiobit device (e.g., buzz to find pet)."""
+        """Send command to a device (Jiobit or Tile).
+
+        Args:
+            device_id: The device ID
+            cid: The circle ID
+            provider: Device provider ('jiobit' or 'tile')
+            feature_id: Feature to control (1=ring/buzz, 30=light)
+            enable: True to enable feature, False to disable
+            duration: Duration in seconds for the feature
+            strength: Strength level (1-3)
+
+        Returns:
+            True if command was sent successfully
+        """
         circle_data = self.data.circles.get(cid)
         if not circle_data:
+            _LOGGER.debug("Circle %s not found for device command", cid)
             return False
 
         for aid in circle_data.aids:
@@ -1099,30 +1210,160 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                url = f"{API_BASE_URL}/v6/provider/jiobit/devices/{device_id}/circle/{cid}/command"
+                url = f"{API_BASE_URL}/v6/provider/{provider}/devices/{device_id}/circle/{cid}/command"
+
+                ce_id = str(uuid.uuid4())
+                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
                     "Content-Type": "application/json",
                     "User-Agent": API_USER_AGENT,
+                    "circleid": cid,
+                    "ce-type": "com.life360.cloud.platform.devices.command.v1",
+                    "ce-id": ce_id,
+                    "ce-specversion": "1.0",
+                    "ce-time": ce_time,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
                 }
-                payload = {"command": command}
+
+                # Build command payload based on the API format from flows.txt
+                command_name = "deviceUiFeatureEnable" if enable else "deviceUiFeatureDisable"
+                args: dict[str, Any] = {"featureId": feature_id}
+
+                if enable:
+                    args["duration"] = duration
+                    args["strength"] = strength
+                    args["delivered"] = False
+                else:
+                    args["delivered"] = True
+
+                payload = {
+                    "data": {
+                        "commands": [
+                            {
+                                "command": command_name,
+                                "args": args,
+                            }
+                        ]
+                    }
+                }
+
+                _LOGGER.debug(
+                    "Sending device command: POST %s payload=%s",
+                    url,
+                    payload,
+                )
 
                 session = self._acct_data[aid].session
                 async with session.post(url, headers=headers, json=payload) as resp:
+                    resp_text = await resp.text()
                     if resp.status in (200, 201, 204):
-                        _LOGGER.info("Jiobit command '%s' sent to %s", command, device_id)
+                        _LOGGER.info(
+                            "Device command sent: provider=%s device=%s feature=%d enable=%s response=%s",
+                            provider,
+                            device_id,
+                            feature_id,
+                            enable,
+                            resp_text,
+                        )
                         return True
                     else:
                         _LOGGER.debug(
-                            "Jiobit command failed: %s - %s",
+                            "Device command failed: HTTP %s - %s",
                             resp.status,
-                            await resp.text(),
+                            resp_text,
                         )
             except Exception as err:
-                _LOGGER.debug("Error sending Jiobit command: %s", err)
+                _LOGGER.debug("Error sending device command: %s", err)
 
         return False
+
+    async def ring_device(
+        self, device_id: str, cid: CircleID, provider: str = "jiobit"
+    ) -> bool:
+        """Ring/buzz a device to help locate it.
+
+        Args:
+            device_id: The device ID
+            cid: The circle ID
+            provider: Device provider ('jiobit' or 'tile')
+
+        Returns:
+            True if command was sent successfully
+        """
+        return await self.send_device_command(
+            device_id=device_id,
+            cid=cid,
+            provider=provider,
+            feature_id=1,  # Ring/buzz feature
+            enable=True,
+            duration=30,
+            strength=2,
+        )
+
+    async def stop_ring_device(
+        self, device_id: str, cid: CircleID, provider: str = "jiobit"
+    ) -> bool:
+        """Stop ringing a device.
+
+        Args:
+            device_id: The device ID
+            cid: The circle ID
+            provider: Device provider ('jiobit' or 'tile')
+
+        Returns:
+            True if command was sent successfully
+        """
+        return await self.send_device_command(
+            device_id=device_id,
+            cid=cid,
+            provider=provider,
+            feature_id=1,  # Ring/buzz feature
+            enable=False,
+        )
+
+    async def toggle_device_light(
+        self, device_id: str, cid: CircleID, turn_on: bool = True
+    ) -> bool:
+        """Toggle the light on a Jiobit device.
+
+        Args:
+            device_id: The device ID
+            cid: The circle ID
+            turn_on: True to turn on, False to turn off
+
+        Returns:
+            True if command was sent successfully
+        """
+        return await self.send_device_command(
+            device_id=device_id,
+            cid=cid,
+            provider="jiobit",  # Light is only on Jiobit
+            feature_id=30,  # Light feature
+            enable=turn_on,
+            duration=30 if turn_on else 0,
+            strength=2 if turn_on else 0,
+        )
+
+    # Legacy method for backwards compatibility
+    async def send_jiobit_command(
+        self, device_id: str, cid: CircleID, command: str = "buzz"
+    ) -> bool:
+        """Send command to Jiobit device (e.g., buzz to find pet).
+
+        Deprecated: Use ring_device() or toggle_device_light() instead.
+        """
+        if command == "buzz" or command == "ring":
+            return await self.ring_device(device_id, cid, "jiobit")
+        elif command == "light_on":
+            return await self.toggle_device_light(device_id, cid, turn_on=True)
+        elif command == "light_off":
+            return await self.toggle_device_light(device_id, cid, turn_on=False)
+        else:
+            _LOGGER.warning("Unknown Jiobit command: %s", command)
+            return False
 
     async def _client_request(
         self,

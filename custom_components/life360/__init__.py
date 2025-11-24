@@ -28,8 +28,11 @@ from .const import (
     SERVICE_BUZZ_JIOBIT,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
+    SERVICE_RING_DEVICE,
+    SERVICE_STOP_RING_DEVICE,
     SERVICE_SYNC_GEOFENCE_ZONES,
     SERVICE_SYNC_PLACES,
+    SERVICE_TOGGLE_LIGHT,
     SERVICE_UPDATE_LOCATION,
     SIGNAL_MEMBERS_CHANGED,
     SIGNAL_UPDATE_LOCATION,
@@ -314,6 +317,171 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(
         DOMAIN, SERVICE_BUZZ_JIOBIT, buzz_jiobit, _BUZZ_JIOBIT_SCHEMA
+    )
+
+    # Ring device service - works for Jiobit and potentially Tile
+    _RING_DEVICE_SCHEMA = vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Required("circle_id"): cv.string,
+        vol.Optional("provider", default="jiobit"): vol.In(["jiobit", "tile"]),
+    })
+
+    async def ring_device(call: ServiceCall) -> None:
+        """Ring a device to help locate it (Jiobit or Tile)."""
+        device_id = call.data["device_id"]
+        circle_id = call.data["circle_id"]
+        provider = call.data.get("provider", "jiobit")
+
+        _LOGGER.debug(
+            "Service %s called: device_id=%s, circle_id=%s, provider=%s",
+            SERVICE_RING_DEVICE,
+            device_id,
+            circle_id,
+            provider,
+        )
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            from .helpers import CircleID
+            success = await coordinator.ring_device(
+                device_id, CircleID(circle_id), provider
+            )
+            if success:
+                _LOGGER.info(
+                    "Service %s completed: Ring command sent to %s device %s",
+                    SERVICE_RING_DEVICE,
+                    provider,
+                    device_id,
+                )
+                return
+
+        _LOGGER.warning(
+            "Service %s failed: Could not ring %s device %s",
+            SERVICE_RING_DEVICE,
+            provider,
+            device_id,
+        )
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_RING_DEVICE, ring_device, _RING_DEVICE_SCHEMA
+    )
+
+    # Stop ring device service
+    _STOP_RING_DEVICE_SCHEMA = vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Required("circle_id"): cv.string,
+        vol.Optional("provider", default="jiobit"): vol.In(["jiobit", "tile"]),
+    })
+
+    async def stop_ring_device(call: ServiceCall) -> None:
+        """Stop ringing a device."""
+        device_id = call.data["device_id"]
+        circle_id = call.data["circle_id"]
+        provider = call.data.get("provider", "jiobit")
+
+        _LOGGER.debug(
+            "Service %s called: device_id=%s, circle_id=%s, provider=%s",
+            SERVICE_STOP_RING_DEVICE,
+            device_id,
+            circle_id,
+            provider,
+        )
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            from .helpers import CircleID
+            success = await coordinator.stop_ring_device(
+                device_id, CircleID(circle_id), provider
+            )
+            if success:
+                _LOGGER.info(
+                    "Service %s completed: Stop ring command sent to %s device %s",
+                    SERVICE_STOP_RING_DEVICE,
+                    provider,
+                    device_id,
+                )
+                return
+
+        _LOGGER.warning(
+            "Service %s failed: Could not stop ringing %s device %s",
+            SERVICE_STOP_RING_DEVICE,
+            provider,
+            device_id,
+        )
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_STOP_RING_DEVICE, stop_ring_device, _STOP_RING_DEVICE_SCHEMA
+    )
+
+    # Toggle light service - Jiobit only
+    _TOGGLE_LIGHT_SCHEMA = vol.Schema({
+        vol.Required("device_id"): cv.string,
+        vol.Required("circle_id"): cv.string,
+        vol.Optional("turn_on", default=True): cv.boolean,
+    })
+
+    async def toggle_light(call: ServiceCall) -> None:
+        """Toggle the light on a Jiobit device."""
+        device_id = call.data["device_id"]
+        circle_id = call.data["circle_id"]
+        turn_on = call.data.get("turn_on", True)
+
+        _LOGGER.debug(
+            "Service %s called: device_id=%s, circle_id=%s, turn_on=%s",
+            SERVICE_TOGGLE_LIGHT,
+            device_id,
+            circle_id,
+            turn_on,
+        )
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            from .helpers import CircleID
+            success = await coordinator.toggle_device_light(
+                device_id, CircleID(circle_id), turn_on
+            )
+            if success:
+                state = "on" if turn_on else "off"
+                _LOGGER.info(
+                    "Service %s completed: Light turned %s on Jiobit device %s",
+                    SERVICE_TOGGLE_LIGHT,
+                    state,
+                    device_id,
+                )
+                return
+
+        _LOGGER.warning(
+            "Service %s failed: Could not toggle light on Jiobit device %s",
+            SERVICE_TOGGLE_LIGHT,
+            device_id,
+        )
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_TOGGLE_LIGHT, toggle_light, _TOGGLE_LIGHT_SCHEMA
     )
 
     return True

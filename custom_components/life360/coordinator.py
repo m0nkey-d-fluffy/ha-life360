@@ -1293,6 +1293,14 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if command was sent successfully
         """
+        # For Tile devices, try BLE first if available
+        if provider.lower() == "tile":
+            ble_success = await self._ring_tile_ble(device_id, cid)
+            if ble_success:
+                return True
+            _LOGGER.debug("BLE ring failed or unavailable, trying server API")
+
+        # Fall back to server API (works for Jiobit, may work for Tile)
         return await self.send_device_command(
             device_id=device_id,
             cid=cid,
@@ -1316,6 +1324,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if command was sent successfully
         """
+        # For Tile devices, try BLE first if available
+        if provider.lower() == "tile":
+            ble_success = await self._stop_ring_tile_ble(device_id, cid)
+            if ble_success:
+                return True
+            _LOGGER.debug("BLE stop failed or unavailable, trying server API")
+
         return await self.send_device_command(
             device_id=device_id,
             cid=cid,
@@ -1323,6 +1338,154 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             feature_id=1,  # Ring/buzz feature
             enable=False,
         )
+
+    async def _ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
+        """Ring a Tile device via Bluetooth LE.
+
+        Args:
+            device_id: The Tile device ID
+            cid: The circle ID
+
+        Returns:
+            True if BLE ring was successful
+        """
+        try:
+            from .tile_ble import ring_tile_ble, BLEAK_AVAILABLE, TileVolume
+
+            if not BLEAK_AVAILABLE:
+                _LOGGER.debug("BLE library (bleak) not available")
+                return False
+
+            # Get Tile auth key from stored data
+            auth_key = await self._get_tile_auth_key(device_id, cid)
+            if not auth_key:
+                _LOGGER.debug("No auth key found for Tile %s", device_id)
+                return False
+
+            _LOGGER.info("Attempting to ring Tile %s via BLE", device_id)
+            success = await ring_tile_ble(
+                tile_id=device_id,
+                auth_key=auth_key,
+                volume=TileVolume.MED,
+                duration_seconds=30,
+                scan_timeout=15.0,
+            )
+            return success
+
+        except ImportError:
+            _LOGGER.debug("Tile BLE module not available")
+            return False
+        except Exception as err:
+            _LOGGER.debug("Error ringing Tile via BLE: %s", err)
+            return False
+
+    async def _stop_ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
+        """Stop ringing a Tile device via Bluetooth LE.
+
+        Args:
+            device_id: The Tile device ID
+            cid: The circle ID
+
+        Returns:
+            True if BLE stop was successful
+        """
+        try:
+            from .tile_ble import stop_ring_tile_ble, BLEAK_AVAILABLE
+
+            if not BLEAK_AVAILABLE:
+                return False
+
+            auth_key = await self._get_tile_auth_key(device_id, cid)
+            if not auth_key:
+                return False
+
+            _LOGGER.info("Attempting to stop Tile %s via BLE", device_id)
+            return await stop_ring_tile_ble(
+                tile_id=device_id,
+                auth_key=auth_key,
+                scan_timeout=15.0,
+            )
+
+        except ImportError:
+            return False
+        except Exception as err:
+            _LOGGER.debug("Error stopping Tile via BLE: %s", err)
+            return False
+
+    async def _get_tile_auth_key(
+        self, device_id: str, cid: CircleID
+    ) -> bytes | None:
+        """Get the authentication key for a Tile device.
+
+        This retrieves the auth key from the Tile settings API.
+
+        Args:
+            device_id: The Tile device ID
+            cid: The circle ID
+
+        Returns:
+            16-byte auth key or None if not found
+        """
+        # Check cached tile auth data first
+        if hasattr(self, "_tile_auth_cache"):
+            if device_id in self._tile_auth_cache:
+                return self._tile_auth_cache[device_id]
+        else:
+            self._tile_auth_cache: dict[str, bytes] = {}
+
+        # Try to fetch from Tile settings API
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            return None
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                # Tile device settings endpoint
+                url = f"{API_BASE_URL}/v4/settings/tileDeviceSettings"
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        _LOGGER.debug("Tile settings response: %s", data)
+
+                        # Look for auth key in response
+                        # The structure varies - check common patterns
+                        tiles = data.get("tiles", data.get("devices", []))
+                        if isinstance(tiles, list):
+                            for tile in tiles:
+                                tile_id = tile.get("tile_id", tile.get("tileId", tile.get("id", "")))
+                                # Normalize for comparison
+                                if self._normalize_tile_id(tile_id) == self._normalize_tile_id(device_id):
+                                    auth_key_hex = tile.get("auth_key", tile.get("authKey", ""))
+                                    if auth_key_hex:
+                                        auth_key = bytes.fromhex(auth_key_hex)
+                                        self._tile_auth_cache[device_id] = auth_key
+                                        _LOGGER.debug("Found auth key for Tile %s", device_id)
+                                        return auth_key
+                    else:
+                        _LOGGER.debug("Tile settings request failed: HTTP %s", resp.status)
+
+            except Exception as err:
+                _LOGGER.debug("Error fetching Tile auth key: %s", err)
+
+        return None
+
+    def _normalize_tile_id(self, tile_id: str) -> str:
+        """Normalize Tile ID for comparison."""
+        return tile_id.lower().replace(":", "").replace("-", "").replace(" ", "")
 
     async def toggle_device_light(
         self, device_id: str, cid: CircleID, turn_on: bool = True

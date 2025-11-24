@@ -276,8 +276,12 @@ class DrivingStatsSensor(
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return self._mid in self.coordinator.data
+        """Return if entity is available.
+
+        Always available - shows None if data not accessible for this member.
+        API may return 404 for accounts without driving stats feature.
+        """
+        return self.coordinator.last_update_success
 
 
 class CrashDetectionSensor(
@@ -413,8 +417,12 @@ class TripHistorySensor(
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return self._mid in self.coordinator.data
+        """Return if entity is available.
+
+        Always available - shows 0 trips if data not accessible.
+        API may return 404 for accounts without trip history feature.
+        """
+        return self.coordinator.last_update_success
 
 
 class ScheduledAlertsCoordinator(
@@ -510,8 +518,12 @@ class ScheduledAlertsSensor(
 
     @property
     def available(self) -> bool:
-        """Return if entity is available."""
-        return self._mid in self.coordinator.data
+        """Return if entity is available.
+
+        Always available - shows 0 alerts if data not accessible.
+        API may return 404 for accounts without scheduled alerts feature.
+        """
+        return self.coordinator.last_update_success
 
 
 class DeviceIssuesCoordinator(DataUpdateCoordinator[list[DeviceIssue]]):

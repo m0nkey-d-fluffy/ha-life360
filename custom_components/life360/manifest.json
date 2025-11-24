@@ -7,7 +7,14 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/pnbruckner/ha-life360/issues",
   "loggers": ["life360"],
-  "requirements": ["life360==7.0.1"],
+  "requirements": ["life360==7.0.1", "bleak>=0.21.0"],
+  "bluetooth": [
+    {
+      "service_uuid": "0000feed-0000-1000-8000-00805f9b34fb",
+      "connectable": true
+    }
+  ],
+  "dependencies": ["bluetooth_adapters"],
   "single_config_entry": true,
   "version": "0.7.0"
 }

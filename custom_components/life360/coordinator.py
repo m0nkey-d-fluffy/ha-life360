@@ -1375,7 +1375,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         )
 
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
-        """Fetch and cache device metadata (names, avatars, categories) from tileDeviceSettings.
+        """Fetch and cache device metadata (names, avatars, categories) from /v5/circles/devices.
 
         Args:
             cid: Circle ID
@@ -1396,8 +1396,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Fetch device settings which contain names, avatars, categories
-                url = f"{API_BASE_URL}/v4/settings/tileDeviceSettings"
+                # Fetch device metadata from /v5/circles/devices endpoint
+                # This returns full device info including names, avatars, categories
+                url = f"{API_BASE_URL}/v5/circles/devices"
 
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -1407,7 +1408,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "Accept": "application/json",
                     "User-Agent": API_USER_AGENT,
                     "circleid": cid,
-                    "ce-type": "com.life360.cloud.platform.settings.tile.v1",
+                    "ce-type": "com.life360.cloud.platform.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,

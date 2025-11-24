@@ -472,9 +472,31 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         if isinstance(items, list):
                             for raw_device in items:
                                 try:
+                                    # API may nest device info in 'data' field (CloudEvents style)
+                                    # Flatten structure: merge item-level with nested data
+                                    nested_data = raw_device.get("data", {})
+                                    type_data = nested_data.get("typeData", {})
+
+                                    # Build flat device dict with all available fields
+                                    flat_device = {
+                                        **raw_device,  # Start with top-level fields
+                                        **nested_data,  # Add nested data fields
+                                        **type_data,   # Add typeData fields (for Tile)
+                                    }
+
+                                    # Preserve the item-level id if present
+                                    if "id" in raw_device:
+                                        flat_device["id"] = raw_device["id"]
+
                                     # Determine provider from device data
-                                    provider = raw_device.get("provider", raw_device.get("type", "unknown")).lower()
-                                    device = DeviceData.from_server(raw_device, provider)
+                                    provider = (
+                                        flat_device.get("provider") or
+                                        flat_device.get("type") or
+                                        nested_data.get("provider") or
+                                        "unknown"
+                                    ).lower()
+
+                                    device = DeviceData.from_server(flat_device, provider)
                                     devices[DeviceID(device.device_id)] = device
                                     _LOGGER.debug(
                                         "Parsed %s device: %s (%s)",

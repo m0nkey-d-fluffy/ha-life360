@@ -400,8 +400,17 @@ class DeviceData(ExtraStoredData):
         """Initialize from device data from server."""
         device_id = raw_device.get("id") or raw_device.get("deviceId", "")
 
-        # Try to get name from various fields, fallback to provider + short ID
-        name = raw_device.get("name") or raw_device.get("deviceName")
+        # Try to get name from various fields in order of preference
+        # CloudEvents APIs often nest names in different locations
+        name = (
+            raw_device.get("name") or
+            raw_device.get("deviceName") or
+            raw_device.get("tileName") or
+            raw_device.get("label") or
+            raw_device.get("nickname") or
+            raw_device.get("displayName") or
+            raw_device.get("title")
+        )
         if not name:
             # Create a friendly name from provider and short device ID
             short_id = device_id[-8:] if len(device_id) > 8 else device_id

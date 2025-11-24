@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Callable, Coroutine, Iterable
-import hashlib
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -1376,13 +1375,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         )
 
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
-        """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
+        """Fetch and cache device metadata (names, avatars, categories) from /v5/circles/devices.
 
-        This endpoint returns ALL devices (Tile, Jiobit, phones) with full metadata
-        including user-defined names, categories, and avatars.
+        This endpoint returns devices in a circle with metadata including user-defined names.
 
         Args:
-            cid: Circle ID (used to get account credentials)
+            cid: Circle ID
 
         Returns:
             True if metadata was fetched successfully
@@ -1400,50 +1398,47 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Fetch device metadata from /v6/devices endpoint
-                # This returns ALL devices including Tile/Jiobit with user-defined names
-                url = f"{API_BASE_URL}/v6/devices?activationStates=activated%2Cpending%2Cpending_disassociated"
+                # Use /v5/circles/devices endpoint which is scoped to a circle
+                # This endpoint should return device names and metadata
+                url = f"{API_BASE_URL}/v5/circles/devices"
 
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                # Generate a stable device ID from the account ID for x-device-id header
-                # The API requires this header for authentication
-                # Format similar to Android: "homeassistant" + hash(account_id)[:20]
-                account_hash = hashlib.sha256(aid.encode()).hexdigest()[:20]
-                x_device_id = f"homeassistant{account_hash}"
-
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
-                    "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
-                    "ce-type": "com.life360.device.devices.v1",
+                    "User-Agent": API_USER_AGENT,
+                    # Circle-scoped endpoint uses circleid header
+                    "circleid": cid,
+                    "ce-type": "com.life360.cloud.platform.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,
-                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}/{x_device_id}",
-                    "x-device-id": x_device_id,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching device metadata from %s", url)
+                _LOGGER.debug("Fetching device metadata from %s with circleid=%s", url, cid)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         _LOGGER.debug("Device metadata response: %s", data)
 
-                        # Parse response - structure is data.items[]
-                        # Each item has: id, name, provider, category, avatar, typeData
-                        items = data.get("data", {}).get("items", [])
+                        # Parse response - structure may be data.items[] or just items[]
+                        items = data.get("data", {}).get("items", []) if isinstance(data.get("data"), dict) else data.get("items", [])
+                        if not items and isinstance(data, list):
+                            items = data
+
                         for item in items:
                             # Get device ID from item level
-                            device_id = item.get("id", "")
+                            device_id = item.get("id") or item.get("deviceId", "")
                             if not device_id:
                                 continue
 
                             # Cache name, avatar, category
-                            name = item.get("name")
+                            name = item.get("name") or item.get("deviceName")
                             if name:
                                 self._device_name_cache[device_id] = name
                                 _LOGGER.debug(
@@ -1484,7 +1479,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         _LOGGER.debug("Device metadata endpoint returned 404 - feature not available")
                         return True
                     else:
-                        _LOGGER.debug("Device metadata request failed: HTTP %s", resp.status)
+                        resp_text = await resp.text()
+                        _LOGGER.debug("Device metadata request failed: HTTP %s - %s", resp.status, resp_text[:200])
             except Exception as err:
                 _LOGGER.debug("Error fetching device metadata: %s", err)
 

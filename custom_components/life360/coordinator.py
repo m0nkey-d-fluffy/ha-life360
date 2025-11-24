@@ -451,19 +451,24 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        # Always log response keys at debug level
+
+                        # Handle nested 'data' wrapper in response
+                        device_data = data.get("data", data) if isinstance(data, dict) else data
+
+                        # Always log response structure at debug level
                         _LOGGER.debug(
-                            "Device locations response: status=200, keys=%s, tile_count=%d, jiobit_count=%d",
+                            "Device locations response: status=200, outer_keys=%s, inner_keys=%s, tile_count=%d, jiobit_count=%d",
                             list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                            len(data.get("tile", [])) if isinstance(data, dict) else 0,
-                            len(data.get("jiobit", [])) if isinstance(data, dict) else 0,
+                            list(device_data.keys()) if isinstance(device_data, dict) else type(device_data).__name__,
+                            len(device_data.get("tile", [])) if isinstance(device_data, dict) else 0,
+                            len(device_data.get("jiobit", [])) if isinstance(device_data, dict) else 0,
                         )
                         if self._options.verbosity >= 3:
                             _LOGGER.debug("Full device locations response: %s", data)
 
                         # Parse devices from response
                         for provider in ["tile", "jiobit"]:
-                            provider_devices = data.get(provider, [])
+                            provider_devices = device_data.get(provider, []) if isinstance(device_data, dict) else []
                             if isinstance(provider_devices, list):
                                 for raw_device in provider_devices:
                                     try:

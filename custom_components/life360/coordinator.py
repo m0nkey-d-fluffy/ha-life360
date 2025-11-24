@@ -422,7 +422,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 continue
 
             try:
-                # Build the request - include circle ID in header as required by API
+                # Build the request - include circle headers as required by API
                 url = f"{API_BASE_URL}/v5/circles/devices/locations?providers[]=tile&providers[]=jiobit"
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
@@ -430,10 +430,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "User-Agent": API_USER_AGENT,
                     "Cache-Control": "no-cache",
                     "ce-id": cid,  # Circle ID required by API
+                    "ce-type": "circle",  # Circle type required by API
                 }
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("GET %s with ce-id=%s", url, cid)
+                _LOGGER.debug("GET %s with ce-id=%s ce-type=circle", url, cid)
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:

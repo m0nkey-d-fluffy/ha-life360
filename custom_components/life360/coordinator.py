@@ -1437,13 +1437,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # --- REGISTRATION FIX START ---
+            # --- UNIVERSAL REGISTRATION FIX ---
             
-            # Use the generated device_id (hass...) to keep it unique per installation
-            # This ensures every user gets their own unique ID automatically.
+            # This uses the generated device_id (hass...) to ensure it works for every addon user automatically.
             
-            # Payload: Spoofing a generic iOS installation 
-            # We include multiple variations of ID keys to satisfy different API versions
+            # Payload: Mimics a legitimate Life360 iOS App installation
+            # We include all variations of ID keys (udid, appId, applicationId) to satisfy the API
             payload = {
                 "deviceId": device_id,
                 "udid": device_id,
@@ -1461,7 +1460,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "installId": device_id,
                 "countryCode": "US"
             }
-            # --- REGISTRATION FIX END ---
+            # --- END FIX ---
+			
             session = self._acct_data[aid].session
             _LOGGER.debug("Registering Home Assistant as device: %s", device_id)
 

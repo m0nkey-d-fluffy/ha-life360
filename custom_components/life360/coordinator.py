@@ -441,8 +441,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         # Fetch device metadata first to get names, avatars, categories
         # This populates the cache that we use below
-        if not self._device_name_cache:
-            await self._fetch_device_metadata(cid)
+        # Always fetch to ensure we have the latest names
+        metadata_fetched = await self._fetch_device_metadata(cid)
+        _LOGGER.debug(
+            "Device metadata fetch result: success=%s, cached_devices=%d",
+            metadata_fetched,
+            len(self._device_name_cache),
+        )
 
         if self._options.verbosity >= 2:
             _LOGGER.debug("Fetching device locations for circle %s", cid)
@@ -519,9 +524,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                         flat_device["id"] = raw_device["id"]
 
                                     # Get device ID for cache lookup
+                                    # Use same order as metadata fetch to ensure cache hits
                                     device_id = (
-                                        flat_device.get("deviceId") or
                                         flat_device.get("id") or
+                                        flat_device.get("deviceId") or
+                                        flat_device.get("device_id") or
+                                        raw_device.get("id") or
                                         raw_device.get("deviceId") or
                                         ""
                                     )
@@ -532,9 +540,21 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                         if not flat_device.get("name"):
                                             flat_device["name"] = self._device_name_cache[device_id]
                                             _LOGGER.debug(
-                                                "Using cached name for %s: %s",
+                                                "✓ Using cached name for %s: %s",
                                                 device_id, flat_device["name"],
                                             )
+                                        else:
+                                            _LOGGER.debug(
+                                                "Device %s already has name: %s",
+                                                device_id, flat_device.get("name"),
+                                            )
+                                    else:
+                                        _LOGGER.warning(
+                                            "⚠ No cached name found for device %s (cache has %d entries: %s)",
+                                            device_id,
+                                            len(self._device_name_cache),
+                                            list(self._device_name_cache.keys()),
+                                        )
                                     if device_id and device_id in self._device_avatar_cache:
                                         if not flat_device.get("avatar"):
                                             flat_device["avatar"] = self._device_avatar_cache[device_id]
@@ -1526,7 +1546,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     headers["x-device-id"] = registered_device_id
 
                 session = self._acct_data[aid].session
-                _LOGGER.debug("Fetching device metadata from %s with x-device-id=%s", url, registered_device_id or "none")
+                _LOGGER.info(
+                    "→ Fetching device metadata from %s with x-device-id=%s",
+                    url, registered_device_id or "none"
+                )
 
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
@@ -1541,6 +1564,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         # =========================================================================
                         # PATCH: Loop to handle new API keys for Tiles and Jiobits
                         # =========================================================================
+                        _LOGGER.debug("Processing %d items from metadata response", len(items))
                         for item in items:
                             item_type = item.get("type", "device")
 
@@ -1606,19 +1630,24 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                     _LOGGER.debug("Failed to decode auth key for %s", device_id)
                         # =========================================================================
 
-                        _LOGGER.debug(
-                            "Cached metadata for %d devices", len(self._device_name_cache)
+                        _LOGGER.info(
+                            "✓ Cached metadata for %d devices: %s",
+                            len(self._device_name_cache),
+                            {k: v for k, v in list(self._device_name_cache.items())[:10]},
                         )
                         return True
                     elif resp.status == 404:
                         # Feature not available for this account - not an error
-                        _LOGGER.debug("Device metadata endpoint returned 404 - feature not available")
+                        _LOGGER.info("Device metadata endpoint returned 404 - feature not available")
                         return True
                     else:
                         resp_text = await resp.text()
-                        _LOGGER.debug("Device metadata request failed: HTTP %s - %s", resp.status, resp_text[:200])
+                        _LOGGER.warning(
+                            "⚠ Device metadata request failed: HTTP %s - %s",
+                            resp.status, resp_text[:200]
+                        )
             except Exception as err:
-                _LOGGER.debug("Error fetching device metadata: %s", err)
+                _LOGGER.error("✗ Error fetching device metadata: %s", err, exc_info=True)
 
         return False
 

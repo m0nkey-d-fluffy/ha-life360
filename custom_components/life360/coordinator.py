@@ -301,6 +301,18 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if not isinstance(raw_members, RequestError):
                 cid, circle_data = circle
                 for raw_member in raw_members:
+                    # PATCH: Fix API Key Mismatch (snake_case -> camelCase)
+                    if "first_name" in raw_member and "firstName" not in raw_member:
+                        raw_member["firstName"] = raw_member["first_name"]
+                    if "last_name" in raw_member and "lastName" not in raw_member:
+                        raw_member["lastName"] = raw_member["last_name"]
+                    
+                    # Fallback: Parse 'name' string if individual fields are missing
+                    if "firstName" not in raw_member and "name" in raw_member:
+                        parts = raw_member["name"].strip().split(" ", 1)
+                        raw_member["firstName"] = parts[0]
+                        raw_member["lastName"] = parts[1] if len(parts) > 1 else ""
+                        
                     mid = MemberID(raw_member["id"])
                     circle_data.mids.add(mid)
                     if mid not in mem_details:
@@ -1547,52 +1559,58 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         if not items and isinstance(data, list):
                             items = data
 
-                        for item in items:
-                            # Handle two types of items:
-                            # 1. "device" items: direct with id, name, avatar, category, typeData
-                            # 2. "profile" items: have data.trackerId linking to device, data.name
+for item in items:
                             item_type = item.get("type", "device")
 
+                            # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
                             if item_type == "profile":
-                                # Profile item (e.g., Jiobit pet profile)
-                                # Name is in data.name, linked device is in data.trackerId
                                 profile_data = item.get("data", {})
-                                tracker_id = profile_data.get("trackerId", "")
+                                # Try both camelCase (old) and snake_case (new)
+                                tracker_id = profile_data.get("trackerId") or profile_data.get("tracker_id") or ""
                                 name = profile_data.get("name", "")
+                                
                                 if tracker_id and name:
                                     self._device_name_cache[tracker_id] = name
-                                    _LOGGER.debug(
-                                        "Cached device name from profile: %s -> %s",
-                                        tracker_id, name,
-                                    )
+                                    _LOGGER.debug(f"Mapped Profile: {name} -> {tracker_id}")
                                 continue
 
-                            # Device item - get device ID
-                            device_id = item.get("id") or item.get("deviceId", "")
+                            # FIX 2: Handle Tiles/Devices with new keys
+                            # Try 'id', 'deviceId', 'device_id'
+                            device_id = (
+                                item.get("id") or 
+                                item.get("deviceId") or 
+                                item.get("device_id") or 
+                                ""
+                            )
+                            
                             if not device_id:
                                 continue
 
-                            # Cache name, avatar, category
-                            name = item.get("name") or item.get("deviceName")
+                            # Try 'name', 'deviceName', 'device_name'
+                            name = (
+                                item.get("name") or 
+                                item.get("deviceName") or 
+                                item.get("device_name")
+                            )
+
                             if name:
                                 self._device_name_cache[device_id] = name
-                                _LOGGER.debug(
-                                    "Cached device name: %s -> %s",
-                                    device_id, name,
-                                )
+                                _LOGGER.debug(f"Mapped Device: {name} -> {device_id}")
 
-                            avatar = item.get("avatar")
+                            # Handle Avatar
+                            avatar = item.get("avatar") or item.get("avatar_url")
                             if avatar:
                                 self._device_avatar_cache[device_id] = avatar
 
+                            # Handle Category
                             category = item.get("category")
                             if category:
                                 self._device_category_cache[device_id] = category
 
-                            # Also cache auth key and BLE device ID for Tile devices
-                            type_data = item.get("typeData", {})
-                            tile_device_id = type_data.get("deviceId", "")
-                            auth_key_b64 = type_data.get("authKey", "")
+                            # Handle Auth Key (for BLE)
+                            type_data = item.get("typeData") or item.get("type_data") or {}
+                            tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
+                            auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
 
                             if tile_device_id and auth_key_b64:
                                 try:

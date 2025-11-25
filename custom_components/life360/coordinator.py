@@ -1438,21 +1438,26 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             }
 
             # Device registration payload
-            # FIX: Added 'udid' field which is required for iOS simulation
+            # --- iOS SPOOFING FIX START ---
+            
+            # Use the generated device_id or spoof a specific one if you prefer
+            # device_id = "your-custom-uuid-here" 
+            
+            # Device registration payload - Spoofing an iPhone
             payload = {
-                "appId": "com.life360.ios.safetymapd",
                 "deviceId": device_id,
-                "udid": device_id,  # <--- THIS KEY IS REQUIRED
-                "os": "iOS",
-                "model": "iPhone15,3", 
+                "udid": device_id,       # <--- CRITICAL FIX: The API requires this field
+                "os": "iOS",             # Spoofing iOS
+                "model": "iPhone15,2",   # Model ID for iPhone 14 Pro
                 "manufacturer": "Apple",
-                "osVersion": "17.0",
-                "appVersion": "24.1.0",
-                "pushToken": "",
-                "deviceType": "mobile",
+                "osVersion": "17.0",     # Recent iOS version
+                "appVersion": "24.1.0",  # Recent Life360 App version
+                "pushToken": "",         
+                "deviceType": "ios",     # Set type to ios
                 "language": "en_US",
-                "country": "US"
+                "installId": device_id   # Helpful to include
             }
+            # --- iOS SPOOFING FIX END ---
 
             session = self._acct_data[aid].session
             _LOGGER.debug("Registering Home Assistant as device: %s", device_id)

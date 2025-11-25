@@ -1400,12 +1400,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     async def _get_or_register_device_id(
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
-        """Get a registered device ID for API requests, registering if needed.
-
-        The /v6/devices endpoint requires a valid x-device-id header that has been
-        registered with Life360. This method attempts to register Home Assistant
-        as a device if we don't have a cached ID.
-        """
+        """Get a registered device ID for API requests, registering if needed."""
         # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
@@ -1443,10 +1438,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             }
 
             # Device registration payload
-            # FIX: Added appId and adjusted fields to match iOS User-Agent
+            # FIX: Added 'udid' field which is required for iOS simulation
             payload = {
                 "appId": "com.life360.ios.safetymapd",
                 "deviceId": device_id,
+                "udid": device_id,  # <--- THIS WAS MISSING
                 "os": "iOS",
                 "model": "iPhone15,3", 
                 "manufacturer": "Apple",

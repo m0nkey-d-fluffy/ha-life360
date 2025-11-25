@@ -1401,11 +1401,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
-        # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
-        # Only attempt registration once per session
         if self._device_registration_attempted:
             return None
 
@@ -1415,11 +1413,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             return None
 
         try:
-            # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
-
-            # Generate a unique ID based on your HA installation
-            # We prefix 'android' to match the expected format
+            
+            # Generate consistent ID
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1438,18 +1434,19 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # Payload: Mimic the EXACT structure from flows.txt (Request 16)
+            # UPDATED PAYLOAD: Added 'name' and verified Android structure
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
-                "deviceUdid": device_id,   # Android uses 'deviceUdid', NOT 'udid'
+                "deviceUdid": device_id,
                 "os": "android",
                 "model": "HomeAssistant",
                 "manufacturer": "HA",
+                "name": "Home Assistant",  # This was likely the missing key causing HTTP 400
                 "osVersion": "12",
                 "appVersion": "25.45.0",
                 "pushToken": "",
-                "deviceType": "mobile",    # Explicitly 'mobile'
+                "deviceType": "mobile",
                 "language": "en_US",
                 "country": "US",
                 "installId": device_id
@@ -1461,9 +1458,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status in (200, 201):
                     data = await resp.json()
-                    _LOGGER.debug("Device registration response: %s", data)
+                    _LOGGER.info("Registered HA as device: %s", data.get("deviceId", device_id))
                     self._registered_device_id = data.get("deviceId", device_id)
-                    _LOGGER.info("Registered HA as device: %s", self._registered_device_id)
                     return self._registered_device_id
                 elif resp.status == 409:
                     self._registered_device_id = device_id
@@ -1471,9 +1467,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     return self._registered_device_id
                 else:
                     resp_text = await resp.text()
-                    _LOGGER.debug("Device registration failed: HTTP %s - %s", resp.status, resp_text[:200])
+                    _LOGGER.error("Device registration failed: HTTP %s - %s", resp.status, resp_text)
         except Exception as err:
-            _LOGGER.debug("Error registering device: %s", err)
+            _LOGGER.exception("Error registering device: %s", err)
 
         return None
 

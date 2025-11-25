@@ -1601,15 +1601,52 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             {k: v for k, v in list(self._device_name_cache.items())[:10]},
                         )
                         return True
+                    elif resp.status == 401 or resp.status == 403:
+                        # Device ID authentication failed - likely token expiration
+                        resp_text = await resp.text()
+                        _LOGGER.warning(
+                            "⚠️  Device ID authentication failed (HTTP %s)",
+                            resp.status
+                        )
+                        _LOGGER.info(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        _LOGGER.info("📝 DEVICE NAMING LIMITATION")
+                        _LOGGER.info(
+                            "The /v6/devices endpoint requires device ID authentication, but "
+                            "the credentials are no longer valid (tokens typically expire after 24-48 hours)."
+                        )
+                        _LOGGER.info(
+                            "💡 Your Tile/Jiobit devices will appear with generic names like "
+                            "'Tile 12345678' or 'Jiobit abcdef12'."
+                        )
+                        _LOGGER.info(
+                            "💡 You can manually rename them in Home Assistant:"
+                        )
+                        _LOGGER.info("   1. Go to Settings → Devices & Services → Life360")
+                        _LOGGER.info("   2. Click on each device entity")
+                        _LOGGER.info("   3. Click the settings icon")
+                        _LOGGER.info("   4. Change the 'Name' field to whatever you want")
+                        _LOGGER.info(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        # Return True to allow operation to continue with generic names
+                        return True
                     elif resp.status == 404:
                         # Feature not available for this account - not an error
                         _LOGGER.info("Device metadata endpoint returned 404 - feature not available")
+                        _LOGGER.info(
+                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
+                        )
                         return True
                     else:
                         resp_text = await resp.text()
                         _LOGGER.warning(
                             "⚠ Device metadata request failed: HTTP %s - %s",
                             resp.status, resp_text[:200]
+                        )
+                        _LOGGER.info(
+                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
                         )
             except Exception as err:
                 _LOGGER.error("✗ Error fetching device metadata: %s", err, exc_info=True)

@@ -1483,19 +1483,22 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                # Set ce-source to match Android format when using device ID
+                # Set ce-source and user-agent to match device platform when using device ID
                 # Format from real Android app: /ANDROID/12/device-model/device_id
                 if registered_device_id and registered_device_id.startswith("android"):
                     ce_source = f"/ANDROID/14/HomeAssistant/{registered_device_id}"
+                    user_agent = "com.life360.android.safetymapd/KOKO/25.45.0 android/14"
                 elif registered_device_id and registered_device_id.startswith("ios"):
                     ce_source = f"/IOS/17/HomeAssistant/{registered_device_id}"
+                    user_agent = "Life360/25.45.0 (iOS 17.0)"
                 else:
                     ce_source = f"/HOMEASSISTANT/{DOMAIN}"
+                    user_agent = API_USER_AGENT
 
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
-                    "User-Agent": API_USER_AGENT,
+                    "User-Agent": user_agent,
                     "ce-type": "com.life360.device.devices.v1",
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",

@@ -1415,7 +1415,6 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         try:
             url = f"{API_BASE_URL}/v3/users/devices"
             
-            # Generate a unique Android-style ID
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1434,27 +1433,32 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # PAYLOAD UPDATE: Mimicking a real Samsung Galaxy Device
+            # FIX: Use a real, standard Android device profile
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
                 "deviceUdid": device_id,
                 "os": "android",
-                "osVersion": "12",
-                "appVersion": "25.45.0",
+                "osVersion": "13.0",
+                "appVersion": "24.1.0",
                 "pushToken": "",
                 "deviceType": "mobile",
                 "language": "en_US",
                 "country": "US",
                 "installId": device_id,
                 
-                # Real Device Profile (Samsung Galaxy Note 5)
-                "model": "SM-N920I", 
-                "deviceModel": "SM-N920I",
-                "manufacturer": "samsung",
-                "deviceManufacturer": "samsung",
-                "name": "Samsung SM-N920I",
-                "deviceName": "Samsung SM-N920I"
+                # Naming
+                "name": "Pixel 6",
+                "deviceName": "Pixel 6",
+                
+                # Hardware Profile - Google Pixel 6
+                "model": "Pixel 6",
+                "deviceModel": "Pixel 6",
+                "manufacturer": "Google",
+                "deviceManufacturer": "Google",
+                "brand": "google",
+                "product": "oriole",
+                "board": "oriole"
             }
 
             session = self._acct_data[aid].session

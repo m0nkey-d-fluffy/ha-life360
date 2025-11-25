@@ -1496,7 +1496,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         return None
 
- async def _fetch_device_metadata(self, cid: CircleID) -> bool:
+	async def _fetch_device_metadata(self, cid: CircleID) -> bool:
         """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
 
         This endpoint returns all Tile/Jiobit devices for the user with their names and metadata.

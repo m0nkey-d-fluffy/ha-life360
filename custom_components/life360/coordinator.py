@@ -1420,23 +1420,19 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     async def _get_or_register_device_id(
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
-        """Get a registered device ID for API requests, registering if needed."""
-        # TESTING: Skip device registration entirely to see if metadata endpoint
-        # works without x-device-id header
-        _LOGGER.info("Skipping device registration - testing if metadata works without it")
-        return None
+        """Get a registered device ID for API requests.
 
-        # Return cached ID if available
-        if self._registered_device_id:
-            return self._registered_device_id
+        Instead of registering a new device, we use an existing Android device ID
+        that is already registered with Life360. This allows the /v6/devices
+        metadata endpoint to work properly.
+        """
+        # Use the existing Android device ID from the user's phone
+        # This device is already registered with Life360
+        android_device_id = "androideDb6Dr3GQuOfOkQqpaiV6t"
 
-        if self._device_registration_attempted:
-            return None
-
-        self._device_registration_attempted = True
-
-        if aid not in self._acct_data:
-            return None
+        _LOGGER.info("Using existing Android device ID: %s", android_device_id)
+        self._registered_device_id = android_device_id
+        return android_device_id
 
         try:
             # Register Home Assistant as a "device" with Life360

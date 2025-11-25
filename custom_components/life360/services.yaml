@@ -28,46 +28,63 @@ get_devices:
 
 buzz_jiobit:
   name: Buzz Jiobit Device
-  description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound.
+  description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound. You can use either entity_id (easier) or device_id + circle_id (advanced).
   fields:
+    entity_id:
+      name: Entity
+      description: The Jiobit device tracker entity (easiest method - automatically determines device_id and circle_id)
+      required: false
+      example: "device_tracker.jiobit_fluffy"
+      selector:
+        entity:
+          integration: life360
+          domain: device_tracker
     device_id:
-      name: Device ID
-      description: The Jiobit device ID to buzz
-      required: true
+      name: Device ID (Advanced)
+      description: The Jiobit device ID to buzz (use this OR entity_id)
+      required: false
       example: "dr123456"
       selector:
         text:
     circle_id:
-      name: Circle ID
-      description: The Life360 circle ID the device belongs to
-      required: true
+      name: Circle ID (Advanced)
+      description: The Life360 circle ID the device belongs to (required if using device_id)
+      required: false
       example: "abc123-def456"
       selector:
         text:
 
 ring_device:
   name: Ring Device
-  description: Ring/buzz a Tile or Jiobit device to help locate it. The device will emit a sound for the specified duration.
+  description: Ring/buzz a Tile or Jiobit device to help locate it. The device will emit a sound for the specified duration. You can use either entity_id (easier) or device_id + circle_id (advanced).
   fields:
+    entity_id:
+      name: Entity
+      description: The Tile/Jiobit device tracker entity (easiest method - automatically determines device_id, circle_id, and provider)
+      required: false
+      example: "device_tracker.tile_keys"
+      selector:
+        entity:
+          integration: life360
+          domain: device_tracker
     device_id:
-      name: Device ID
-      description: The device ID to ring
-      required: true
+      name: Device ID (Advanced)
+      description: The device ID to ring (use this OR entity_id)
+      required: false
       example: "abc123"
       selector:
         text:
     circle_id:
-      name: Circle ID
-      description: The Life360 circle ID the device belongs to
-      required: true
+      name: Circle ID (Advanced)
+      description: The Life360 circle ID the device belongs to (required if using device_id)
+      required: false
       example: "abc123-def456"
       selector:
         text:
     provider:
       name: Provider
-      description: Device provider (tile or jiobit)
+      description: Device provider (tile or jiobit) - auto-detected from entity if using entity_id
       required: false
-      default: "jiobit"
       example: "tile"
       selector:
         select:
@@ -98,27 +115,35 @@ ring_device:
 
 stop_ring_device:
   name: Stop Ringing Device
-  description: Stop ringing/buzzing a Tile or Jiobit device.
+  description: Stop ringing/buzzing a Tile or Jiobit device. You can use either entity_id (easier) or device_id + circle_id (advanced).
   fields:
+    entity_id:
+      name: Entity
+      description: The Tile/Jiobit device tracker entity (easiest method - automatically determines device_id, circle_id, and provider)
+      required: false
+      example: "device_tracker.tile_keys"
+      selector:
+        entity:
+          integration: life360
+          domain: device_tracker
     device_id:
-      name: Device ID
-      description: The device ID to stop ringing
-      required: true
+      name: Device ID (Advanced)
+      description: The device ID to stop ringing (use this OR entity_id)
+      required: false
       example: "abc123"
       selector:
         text:
     circle_id:
-      name: Circle ID
-      description: The Life360 circle ID the device belongs to
-      required: true
+      name: Circle ID (Advanced)
+      description: The Life360 circle ID the device belongs to (required if using device_id)
+      required: false
       example: "abc123-def456"
       selector:
         text:
     provider:
       name: Provider
-      description: Device provider (tile or jiobit)
+      description: Device provider (tile or jiobit) - auto-detected from entity if using entity_id
       required: false
-      default: "jiobit"
       example: "tile"
       selector:
         select:

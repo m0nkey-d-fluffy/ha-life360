@@ -360,15 +360,78 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(DOMAIN, SERVICE_GET_DEVICES, get_devices)
 
+    def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
+        """Extract device_id, circle_id, and provider from entity_id.
+
+        Returns:
+            Tuple of (device_id, circle_id, provider) or (None, None, None) if not found
+        """
+        # Get entity state
+        state = hass.states.get(entity_id)
+        if not state:
+            _LOGGER.error("Entity %s not found", entity_id)
+            return None, None, None
+
+        # Get device_id from attributes
+        device_id = state.attributes.get("device_id")
+        if not device_id:
+            _LOGGER.error("Entity %s does not have a device_id attribute", entity_id)
+            return None, None, None
+
+        # Determine provider from device_type attribute
+        device_type = state.attributes.get("device_type", "").lower()
+        if "tile" in device_type:
+            provider = "tile"
+        elif "jiobit" in device_type or "pet" in device_type:
+            provider = "jiobit"
+        else:
+            provider = "jiobit"  # default
+
+        # Find circle_id by searching through all coordinators
+        entries = hass.config_entries.async_entries(DOMAIN)
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                continue
+
+            # Check device coordinator data
+            device_coord = entry.runtime_data.device_coordinator
+            if device_coord and device_coord.data:
+                if device_id in device_coord.data:
+                    # Found the device! Now find which circle it belongs to
+                    # Get all circles from the main coordinator
+                    main_coord = entry.runtime_data.coordinator
+                    if main_coord and main_coord.data and main_coord.data.circles:
+                        # For now, return the first circle
+                        # Devices typically belong to one circle
+                        for circle_id in main_coord.data.circles.keys():
+                            return device_id, str(circle_id), provider
+
+        _LOGGER.warning("Could not find circle_id for device %s", device_id)
+        return device_id, None, provider
+
     _BUZZ_JIOBIT_SCHEMA = vol.Schema({
-        vol.Required("device_id"): cv.string,
-        vol.Required("circle_id"): cv.string,
+        vol.Exclusive("entity_id", "device_selector"): cv.entity_id,
+        vol.Exclusive("device_id", "device_selector"): cv.string,
+        vol.Optional("circle_id"): cv.string,
     })
 
     async def buzz_jiobit(call: ServiceCall) -> None:
         """Send buzz command to a Jiobit device to help find pet."""
-        device_id = call.data["device_id"]
-        circle_id = call.data["circle_id"]
+        # Support both entity_id and device_id + circle_id
+        entity_id = call.data.get("entity_id")
+
+        if entity_id:
+            device_id, circle_id, _ = _get_device_info_from_entity(entity_id)
+            if not device_id or not circle_id:
+                _LOGGER.error("Failed to extract device info from entity %s", entity_id)
+                return
+        else:
+            device_id = call.data.get("device_id")
+            circle_id = call.data.get("circle_id")
+
+            if not device_id or not circle_id:
+                _LOGGER.error("Either entity_id or both device_id and circle_id must be provided")
+                return
 
         _LOGGER.debug(
             "Service %s called: device_id=%s, circle_id=%s",
@@ -407,18 +470,35 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     # Ring device service (Tile or Jiobit)
     _RING_DEVICE_SCHEMA = vol.Schema({
-        vol.Required("device_id"): cv.string,
-        vol.Required("circle_id"): cv.string,
-        vol.Optional("provider", default="jiobit"): vol.In(["jiobit", "tile"]),
+        vol.Exclusive("entity_id", "device_selector"): cv.entity_id,
+        vol.Exclusive("device_id", "device_selector"): cv.string,
+        vol.Optional("circle_id"): cv.string,
+        vol.Optional("provider"): vol.In(["jiobit", "tile"]),
         vol.Optional("duration", default=30): vol.All(vol.Coerce(int), vol.Range(min=1, max=300)),
         vol.Optional("strength", default=2): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
     })
 
     async def ring_device(call: ServiceCall) -> None:
         """Ring/buzz a device to help locate it."""
-        device_id = call.data["device_id"]
-        circle_id = call.data["circle_id"]
-        provider = call.data.get("provider", "jiobit")
+        # Support both entity_id and device_id + circle_id
+        entity_id = call.data.get("entity_id")
+
+        if entity_id:
+            device_id, circle_id, provider_from_entity = _get_device_info_from_entity(entity_id)
+            if not device_id or not circle_id:
+                _LOGGER.error("Failed to extract device info from entity %s", entity_id)
+                return
+            # Use provider from entity unless explicitly overridden
+            provider = call.data.get("provider", provider_from_entity or "jiobit")
+        else:
+            device_id = call.data.get("device_id")
+            circle_id = call.data.get("circle_id")
+            provider = call.data.get("provider", "jiobit")
+
+            if not device_id or not circle_id:
+                _LOGGER.error("Either entity_id or both device_id and circle_id must be provided")
+                return
+
         duration = call.data.get("duration", 30)
         strength = call.data.get("strength", 2)
 
@@ -462,16 +542,31 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     # Stop ring device service
     _STOP_RING_DEVICE_SCHEMA = vol.Schema({
-        vol.Required("device_id"): cv.string,
-        vol.Required("circle_id"): cv.string,
-        vol.Optional("provider", default="jiobit"): vol.In(["jiobit", "tile"]),
+        vol.Exclusive("entity_id", "device_selector"): cv.entity_id,
+        vol.Exclusive("device_id", "device_selector"): cv.string,
+        vol.Optional("circle_id"): cv.string,
+        vol.Optional("provider"): vol.In(["jiobit", "tile"]),
     })
 
     async def stop_ring_device(call: ServiceCall) -> None:
         """Stop ringing/buzzing a device."""
-        device_id = call.data["device_id"]
-        circle_id = call.data["circle_id"]
-        provider = call.data.get("provider", "jiobit")
+        # Support both entity_id and device_id + circle_id
+        entity_id = call.data.get("entity_id")
+
+        if entity_id:
+            device_id, circle_id, provider_from_entity = _get_device_info_from_entity(entity_id)
+            if not device_id or not circle_id:
+                _LOGGER.error("Failed to extract device info from entity %s", entity_id)
+                return
+            provider = call.data.get("provider", provider_from_entity or "jiobit")
+        else:
+            device_id = call.data.get("device_id")
+            circle_id = call.data.get("circle_id")
+            provider = call.data.get("provider", "jiobit")
+
+            if not device_id or not circle_id:
+                _LOGGER.error("Either entity_id or both device_id and circle_id must be provided")
+                return
 
         _LOGGER.debug(
             "Service %s called: device_id=%s, circle_id=%s, provider=%s",

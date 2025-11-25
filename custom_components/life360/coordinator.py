@@ -1401,9 +1401,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
+        # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
+        # Only attempt registration once per session
         if self._device_registration_attempted:
             return None
 
@@ -1413,9 +1415,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             return None
 
         try:
+            # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
-            
-            # Generate consistent ID
+
+            # Generate a unique ID that mimics Android format
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1434,7 +1437,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # UPDATED PAYLOAD: Added 'name' and verified Android structure
+            # Payload updated with "name" to fix HTTP 400 error
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
@@ -1442,7 +1445,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "os": "android",
                 "model": "HomeAssistant",
                 "manufacturer": "HA",
-                "name": "Home Assistant",  # This was likely the missing key causing HTTP 400
+                "name": "Home Assistant",  # <--- THIS IS THE MISSING KEY
                 "osVersion": "12",
                 "appVersion": "25.45.0",
                 "pushToken": "",
@@ -1453,21 +1456,21 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             }
 
             session = self._acct_data[aid].session
-            _LOGGER.debug("Registering Home Assistant as device: %s", device_id)
+            _LOGGER.info("Attempting to register HA as device: %s", device_id)
 
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status in (200, 201):
                     data = await resp.json()
-                    _LOGGER.info("Registered HA as device: %s", data.get("deviceId", device_id))
+                    _LOGGER.info("Registration SUCCESS: %s", data)
                     self._registered_device_id = data.get("deviceId", device_id)
                     return self._registered_device_id
                 elif resp.status == 409:
                     self._registered_device_id = device_id
-                    _LOGGER.debug("Device already registered, using: %s", device_id)
+                    _LOGGER.info("Device already registered, using: %s", device_id)
                     return self._registered_device_id
                 else:
                     resp_text = await resp.text()
-                    _LOGGER.error("Device registration failed: HTTP %s - %s", resp.status, resp_text)
+                    _LOGGER.error("Registration FAILED: HTTP %s - %s", resp.status, resp_text)
         except Exception as err:
             _LOGGER.exception("Error registering device: %s", err)
 

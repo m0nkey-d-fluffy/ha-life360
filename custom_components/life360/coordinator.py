@@ -1422,33 +1422,28 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     ) -> str | None:
         """Get a registered device ID for API requests.
 
-        Generates a unique Android-style device ID based on the Home Assistant
-        installation. This mimics the format used by the Android app
-        (e.g., "androideDb6Dr3GQuOfOkQqpaiV6t") but is unique per installation.
+        Generates a unique Android-style device ID and registers it with Life360.
+        The registration response is logged to verify what device ID the API returns.
         """
         # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
-        # Generate a unique device ID based on the config entry ID
-        # Format: "android" + base64-like string (mimics real Android device IDs)
-        entry_id = self.config_entry.entry_id.replace("-", "")
+        if self._device_registration_attempted:
+            return None
 
-        # Create an Android-style device ID using the entry_id
-        # Use first 24 chars after "android" prefix to match Android app pattern
-        device_id = f"android{entry_id[:22]}"
+        self._device_registration_attempted = True
 
-        _LOGGER.info("Generated Android-style device ID: %s", device_id)
-        self._registered_device_id = device_id
-        return device_id
+        if aid not in self._acct_data:
+            return None
 
         try:
             # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
 
-            # Generate a unique ID (hass...)
+            # Generate Android-style device ID based on config entry
             entry_id = self.config_entry.entry_id.replace("-", "")
-            device_id = f"hass{entry_id[:24]}"
+            device_id = f"android{entry_id[:22]}"
             
             ce_id = str(uuid.uuid4())
             ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -1482,35 +1477,50 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             }
 
             session = self._acct_data[aid].session
-            _LOGGER.info("Attempting to register HA as device: %s", device_id)
+            _LOGGER.info("🔧 Attempting device registration with ID: %s", device_id)
 
             async with session.post(url, headers=headers, data=payload) as resp:
                 if resp.status in (200, 201):
                     data = await resp.json()
-                    _LOGGER.info("Registration SUCCESS: %s", data)
+                    _LOGGER.info("✅ Registration SUCCESS - HTTP %s", resp.status)
+                    _LOGGER.info("📦 Full response data: %s", data)
+                    _LOGGER.info("📦 Response type: %s", type(data).__name__)
 
-                    # Handle different response formats (dict or list)
+                    # Extract device ID from response
+                    returned_device_id = None
                     if isinstance(data, dict):
                         # Response is a dictionary with device info
-                        self._registered_device_id = (
+                        returned_device_id = (
                             data.get("deviceId") or
                             data.get("deviceUdid") or
-                            data.get("id") or
-                            device_id
+                            data.get("id")
                         )
+                        _LOGGER.info("📋 Extracted from dict - deviceId: %s, deviceUdid: %s, id: %s",
+                                   data.get("deviceId"), data.get("deviceUdid"), data.get("id"))
                     elif isinstance(data, list) and len(data) > 0:
                         # Response is a list, use first item
                         device_info = data[0]
-                        self._registered_device_id = (
+                        returned_device_id = (
                             device_info.get("deviceId") or
                             device_info.get("deviceUdid") or
-                            device_info.get("id") or
-                            device_id
+                            device_info.get("id")
                         )
+                        _LOGGER.info("📋 Extracted from list[0] - deviceId: %s, deviceUdid: %s, id: %s",
+                                   device_info.get("deviceId"), device_info.get("deviceUdid"), device_info.get("id"))
                     else:
-                        # Empty response or list - use the device_id we sent
-                        _LOGGER.info("Empty response, using device_id: %s", device_id)
+                        _LOGGER.warning("⚠️ Empty response or unrecognized format")
+
+                    # Use returned ID if available, otherwise use what we sent
+                    if returned_device_id:
+                        self._registered_device_id = returned_device_id
+                        _LOGGER.info("✅ Using device ID from API response: %s", returned_device_id)
+                        if returned_device_id != device_id:
+                            _LOGGER.warning("⚠️ API returned DIFFERENT device ID than we sent!")
+                            _LOGGER.warning("   Sent: %s", device_id)
+                            _LOGGER.warning("   Got:  %s", returned_device_id)
+                    else:
                         self._registered_device_id = device_id
+                        _LOGGER.info("ℹ️ No device ID in response, using what we sent: %s", device_id)
 
                     return self._registered_device_id
                 elif resp.status == 409:

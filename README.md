@@ -127,6 +127,24 @@ Alternatively, go to Settings -> Devices & services and click the **`+ ADD INTEG
 Find or search for "Life360", click on it, then follow the prompts.
 
 ### Configuration Options
+
+#### Device ID (Optional)
+
+**For Tile/Jiobit Device Names**
+
+If you have Tile Bluetooth trackers or Jiobit pet GPS devices linked to your Life360 account, you can optionally provide your Life360 device ID to enable proper device names.
+
+- **With Device ID**: Devices show their actual names from Life360 (e.g., "Keys", "Wallet", "Fluffy")
+- **Without Device ID**: Devices show generic names (e.g., "Tile 12345678") that you can manually rename in Home Assistant
+
+The device ID is a unique identifier from your Life360 mobile app installation. It looks like:
+- Android: `androideDb6Dr3GQuOfOkQqpaiV6t`
+- iOS: Similar format starting with "ios"
+
+To obtain your device ID, you'll need to capture network traffic from the Life360 app using tools like mitmproxy or Charles Proxy. Look for the `x-device-id` header in API requests.
+
+See [Tile & Device Tracker Support](docs/tiles-and-devices.md#configuring-device-id) for detailed instructions.
+
 #### GPS Accuracy Radius Limit
 
 Each location update has a GPS accuracy value (see the entity's corresponding attribute.)

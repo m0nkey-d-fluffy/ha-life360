@@ -10,6 +10,7 @@ Welcome to the Life360 Home Assistant integration documentation.
 
 ## Guides
 
+- **[Dashboard Setup](dashboard-setup.md)** - Add Tile/Jiobit devices to your dashboard with ring buttons
 - **[Tile & Device Support](tiles-and-devices.md)** - Track Tile Bluetooth trackers and Jiobit pet GPS devices
 - **[API Reference](api_endpoints.md)** - Technical documentation of Life360 API endpoints
 
@@ -17,6 +18,7 @@ Welcome to the Life360 Home Assistant integration documentation.
 
 | Topic | Description |
 |-------|-------------|
+| [Dashboard Setup](dashboard-setup.md) | Create ring buttons for your Tiles and Jiobits |
 | [Member Tracking](../README.md#current-changes--improvements) | How member location tracking works |
 | [Tile Support](tiles-and-devices.md#tile-trackers) | Setting up Tile device tracking |
 | [Pet GPS](tiles-and-devices.md#jiobit-petchild-gps) | Setting up Jiobit pet trackers |

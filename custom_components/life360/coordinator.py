@@ -1438,24 +1438,22 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             }
 
             # Device registration payload
-            # --- iOS SPOOFING FIX START ---
-            
-            # Use the generated device_id or spoof a specific one if you prefer
-            # device_id = "your-custom-uuid-here" 
+            # --- iOS SPOOFING FIX (Updated) ---
             
             # Device registration payload - Spoofing an iPhone
             payload = {
                 "deviceId": device_id,
-                "udid": device_id,       # <--- CRITICAL FIX: The API requires this field
-                "os": "iOS",             # Spoofing iOS
-                "model": "iPhone15,2",   # Model ID for iPhone 14 Pro
+                "udid": device_id,
+                "appId": "com.life360.ios.safety",  # <--- NEW FIX: Added App ID
+                "os": "iOS",
+                "model": "iPhone15,2",
                 "manufacturer": "Apple",
-                "osVersion": "17.0",     # Recent iOS version
-                "appVersion": "24.1.0",  # Recent Life360 App version
+                "osVersion": "17.0",
+                "appVersion": "24.1.0",
                 "pushToken": "",         
-                "deviceType": "ios",     # Set type to ios
+                "deviceType": "ios",
                 "language": "en_US",
-                "installId": device_id   # Helpful to include
+                "installId": device_id
             }
             # --- iOS SPOOFING FIX END ---
 

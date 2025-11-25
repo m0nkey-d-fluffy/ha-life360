@@ -1479,13 +1479,30 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 if resp.status in (200, 201):
                     data = await resp.json()
                     _LOGGER.info("Registration SUCCESS: %s", data)
-                    # Response might have deviceId, deviceUdid, or id
-                    self._registered_device_id = (
-                        data.get("deviceId") or
-                        data.get("deviceUdid") or
-                        data.get("id") or
-                        device_id
-                    )
+
+                    # Handle different response formats (dict or list)
+                    if isinstance(data, dict):
+                        # Response is a dictionary with device info
+                        self._registered_device_id = (
+                            data.get("deviceId") or
+                            data.get("deviceUdid") or
+                            data.get("id") or
+                            device_id
+                        )
+                    elif isinstance(data, list) and len(data) > 0:
+                        # Response is a list, use first item
+                        device_info = data[0]
+                        self._registered_device_id = (
+                            device_info.get("deviceId") or
+                            device_info.get("deviceUdid") or
+                            device_info.get("id") or
+                            device_id
+                        )
+                    else:
+                        # Empty response or list - use the device_id we sent
+                        _LOGGER.info("Empty response, using device_id: %s", device_id)
+                        self._registered_device_id = device_id
+
                     return self._registered_device_id
                 elif resp.status == 409:
                     self._registered_device_id = device_id

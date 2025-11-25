@@ -1442,7 +1442,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             payload = {
                 "appId": "com.life360.ios.safetymapd",
                 "deviceId": device_id,
-                "udid": device_id,  # <--- THIS WAS MISSING
+                "udid": device_id,  # <--- THIS IS THE MISSING KEY
                 "os": "iOS",
                 "model": "iPhone15,3", 
                 "manufacturer": "Apple",

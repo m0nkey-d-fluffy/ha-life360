@@ -1418,10 +1418,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
 
-            # Generate a unique but stable device ID
+            # Generate a unique ID based on your HA installation
+            # We prefix 'android' to match the expected format
             entry_id = self.config_entry.entry_id.replace("-", "")
-            device_id = f"hass{entry_id[:24]}"
-
+            device_id = f"android{entry_id[:24]}"
+            
             ce_id = str(uuid.uuid4())
             ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -1437,31 +1438,23 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # --- UNIVERSAL REGISTRATION FIX ---
-            
-            # This uses the generated device_id (hass...) to ensure it works for every addon user automatically.
-            
-            # Payload: Mimics a legitimate Life360 iOS App installation
-            # We include all variations of ID keys (udid, appId, applicationId) to satisfy the API
+            # Payload: Mimic the EXACT structure from flows.txt (Request 16)
             payload = {
+                "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
-                "udid": device_id,
-                "appId": "com.life360.ios.safety",
-                "applicationId": "com.life360.ios.safety", 
-                "bundleId": "com.life360.ios.safety",
-                "os": "iOS",
-                "model": "iPhone15,2",  # iPhone 14 Pro
-                "manufacturer": "Apple",
-                "osVersion": "17.0",
-                "appVersion": "24.1.0",
-                "pushToken": "",         
-                "deviceType": "ios",
+                "deviceUdid": device_id,   # Android uses 'deviceUdid', NOT 'udid'
+                "os": "android",
+                "model": "HomeAssistant",
+                "manufacturer": "HA",
+                "osVersion": "12",
+                "appVersion": "25.45.0",
+                "pushToken": "",
+                "deviceType": "mobile",    # Explicitly 'mobile'
                 "language": "en_US",
-                "installId": device_id,
-                "countryCode": "US"
+                "country": "US",
+                "installId": device_id
             }
-            # --- END FIX ---
-			
+
             session = self._acct_data[aid].session
             _LOGGER.debug("Registering Home Assistant as device: %s", device_id)
 
@@ -1470,23 +1463,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     data = await resp.json()
                     _LOGGER.debug("Device registration response: %s", data)
                     self._registered_device_id = data.get("deviceId", device_id)
-                    _LOGGER.info(
-                        "Registered Home Assistant with Life360 as device: %s",
-                        self._registered_device_id,
-                    )
+                    _LOGGER.info("Registered HA as device: %s", self._registered_device_id)
                     return self._registered_device_id
                 elif resp.status == 409:
-                    # Conflict - device already registered, this is good!
                     self._registered_device_id = device_id
                     _LOGGER.debug("Device already registered, using: %s", device_id)
                     return self._registered_device_id
                 else:
                     resp_text = await resp.text()
-                    _LOGGER.debug(
-                        "Device registration failed: HTTP %s - %s",
-                        resp.status,
-                        resp_text[:200],
-                    )
+                    _LOGGER.debug("Device registration failed: HTTP %s - %s", resp.status, resp_text[:200])
         except Exception as err:
             _LOGGER.debug("Error registering device: %s", err)
 

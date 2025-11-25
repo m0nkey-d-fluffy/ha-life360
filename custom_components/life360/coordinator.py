@@ -1447,7 +1447,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             headers = {
                 "Authorization": f"Bearer {acct.authorization}",
                 "Accept": "application/json",
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
                 "User-Agent": API_USER_AGENT,
                 "ce-type": "com.life360.user.devices.v1",
                 "ce-id": ce_id,
@@ -1456,32 +1456,36 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # Payload: iOS simulation (This passed validation before except for 'name')
+            # Payload: Form-encoded data matching Android app format
+            # The API expects application/x-www-form-urlencoded, not JSON
             payload = {
-                "appId": "com.life360.ios.safety",
-                "deviceId": device_id,
-                "udid": device_id,
-                "os": "iOS",
-                "model": "iPhone15,2", 
-                "manufacturer": "Apple",
-                "name": "Home Assistant", # <--- The missing key that caused the HTTP 400 before
-                "osVersion": "17.0",
-                "appVersion": "24.1.0",
-                "pushToken": "",
-                "deviceType": "ios",
-                "language": "en_US",
-                "country": "US",
-                "installId": device_id
+                "appId": "com.life360.android.safetymapd",
+                "appVersion": "25.45.0",
+                "deviceUdid": device_id,  # MUST be deviceUdid, not udid
+                "deviceName": "homeassistant",
+                "deviceType": "android",
+                "deviceModel": "Home Assistant",
+                "deviceVersion": "12",
+                "deviceToken": "",
+                "carrier": "unknown",
+                "adUdid": device_id,
+                "adLimit": "0"
             }
 
             session = self._acct_data[aid].session
             _LOGGER.info("Attempting to register HA as device: %s", device_id)
 
-            async with session.post(url, headers=headers, json=payload) as resp:
+            async with session.post(url, headers=headers, data=payload) as resp:
                 if resp.status in (200, 201):
                     data = await resp.json()
                     _LOGGER.info("Registration SUCCESS: %s", data)
-                    self._registered_device_id = data.get("deviceId", device_id)
+                    # Response might have deviceId, deviceUdid, or id
+                    self._registered_device_id = (
+                        data.get("deviceId") or
+                        data.get("deviceUdid") or
+                        data.get("id") or
+                        device_id
+                    )
                     return self._registered_device_id
                 elif resp.status == 409:
                     self._registered_device_id = device_id

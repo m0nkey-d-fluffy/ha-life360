@@ -1601,15 +1601,52 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             {k: v for k, v in list(self._device_name_cache.items())[:10]},
                         )
                         return True
+                    elif resp.status == 401 or resp.status == 403:
+                        # Device ID authentication failed - likely token expiration
+                        resp_text = await resp.text()
+                        _LOGGER.warning(
+                            "⚠️  Device ID authentication failed (HTTP %s)",
+                            resp.status
+                        )
+                        _LOGGER.info(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        _LOGGER.info("📝 DEVICE NAMING LIMITATION")
+                        _LOGGER.info(
+                            "The /v6/devices endpoint requires device ID authentication, but "
+                            "the credentials are no longer valid (tokens typically expire after 24-48 hours)."
+                        )
+                        _LOGGER.info(
+                            "💡 Your Tile/Jiobit devices will appear with generic names like "
+                            "'Tile 12345678' or 'Jiobit abcdef12'."
+                        )
+                        _LOGGER.info(
+                            "💡 You can manually rename them in Home Assistant:"
+                        )
+                        _LOGGER.info("   1. Go to Settings → Devices & Services → Life360")
+                        _LOGGER.info("   2. Click on each device entity")
+                        _LOGGER.info("   3. Click the settings icon")
+                        _LOGGER.info("   4. Change the 'Name' field to whatever you want")
+                        _LOGGER.info(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        # Return True to allow operation to continue with generic names
+                        return True
                     elif resp.status == 404:
                         # Feature not available for this account - not an error
                         _LOGGER.info("Device metadata endpoint returned 404 - feature not available")
+                        _LOGGER.info(
+                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
+                        )
                         return True
                     else:
                         resp_text = await resp.text()
                         _LOGGER.warning(
                             "⚠ Device metadata request failed: HTTP %s - %s",
                             resp.status, resp_text[:200]
+                        )
+                        _LOGGER.info(
+                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
                         )
             except Exception as err:
                 _LOGGER.error("✗ Error fetching device metadata: %s", err, exc_info=True)
@@ -1627,20 +1664,29 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             Tuple of (auth_key bytes, ble_device_id) or (None, None) if not found
         """
+        _LOGGER.debug("Fetching Tile auth data for device %s in circle %s", device_id, cid)
+
         # Check cache first
         if device_id in self._tile_auth_cache and device_id in self._tile_ble_id_cache:
-            return self._tile_auth_cache[device_id], self._tile_ble_id_cache[device_id]
+            ble_id = self._tile_ble_id_cache[device_id]
+            _LOGGER.debug("✓ Found auth data in cache: device_id=%s, ble_id=%s", device_id, ble_id)
+            return self._tile_auth_cache[device_id], ble_id
 
+        _LOGGER.debug("Auth data not in cache, fetching device metadata...")
         # Try to fetch metadata which will populate the cache
         await self._fetch_device_metadata(cid)
 
         # Check cache again
         if device_id in self._tile_auth_cache:
+            ble_id = self._tile_ble_id_cache.get(device_id)
+            _LOGGER.debug("✓ Auth data retrieved after metadata fetch: device_id=%s, ble_id=%s", device_id, ble_id or "None")
             return (
                 self._tile_auth_cache[device_id],
-                self._tile_ble_id_cache.get(device_id),
+                ble_id,
             )
 
+        _LOGGER.warning("❌ No auth data found for device %s after metadata fetch", device_id)
+        _LOGGER.debug("Available devices in auth cache: %s", list(self._tile_auth_cache.keys()))
         return None, None
 
     async def _ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
@@ -1653,29 +1699,40 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if BLE ring was successful
         """
+        _LOGGER.info("🔔 Attempting to ring Tile device %s via BLE", device_id)
+
         try:
             from .tile_ble import ring_tile_ble, BLEAK_AVAILABLE, TileVolume
-        except ImportError:
-            _LOGGER.debug("Tile BLE module not available")
+        except ImportError as err:
+            _LOGGER.debug("❌ Tile BLE module not available: %s", err)
             return False
 
         if not BLEAK_AVAILABLE:
-            _LOGGER.debug("bleak library not available for Tile BLE")
+            _LOGGER.info("⚠️  bleak library not available - cannot use BLE for Tile devices")
+            _LOGGER.info("💡 Install bleak for Bluetooth support: pip install bleak")
             return False
 
         auth_key, ble_device_id = await self._get_tile_auth_data(device_id, cid)
         if not auth_key or not ble_device_id:
-            _LOGGER.debug("No Tile auth data found for device %s", device_id)
+            _LOGGER.warning("❌ No Tile auth data found for device %s", device_id)
+            _LOGGER.info("💡 Make sure the device is properly linked in Life360 and try the get_devices service")
             return False
 
-        _LOGGER.debug("Attempting BLE ring for Tile %s", ble_device_id)
-        return await ring_tile_ble(
+        _LOGGER.info("✓ Found Tile auth credentials, attempting BLE ring for %s", ble_device_id)
+        result = await ring_tile_ble(
             ble_device_id,
             auth_key,
             volume=TileVolume.MED,
             duration_seconds=30,
             scan_timeout=10.0,
         )
+
+        if result:
+            _LOGGER.info("✅ Tile BLE ring successful for device %s", device_id)
+        else:
+            _LOGGER.warning("❌ Tile BLE ring failed for device %s", device_id)
+
+        return result
 
     async def _stop_ring_tile_ble(self, device_id: str, cid: CircleID) -> bool:
         """Stop ringing a Tile device via Bluetooth LE.

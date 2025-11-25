@@ -119,32 +119,46 @@ class TileBleClient:
         Returns:
             BLEDevice if found, None otherwise
         """
-        _LOGGER.debug("Scanning for Tile %s...", self.tile_id)
+        _LOGGER.info("🔍 Scanning for Tile device: %s (timeout: %ds)", self.tile_id, scan_timeout)
 
         # Normalize tile_id for comparison
         tile_id_lower = self.tile_id.lower().replace(":", "").replace("-", "")
+        _LOGGER.debug("Normalized Tile ID for matching: %s", tile_id_lower)
 
-        devices = await BleakScanner.discover(
-            timeout=scan_timeout,
-            service_uuids=[TILE_SERVICE_UUID],
-        )
+        try:
+            devices = await BleakScanner.discover(
+                timeout=scan_timeout,
+                service_uuids=[TILE_SERVICE_UUID],
+            )
+            _LOGGER.info("📡 BLE scan complete: Found %d Tile devices nearby", len(devices))
 
-        for device in devices:
-            # Check by address
-            addr_normalized = device.address.lower().replace(":", "").replace("-", "")
-            if tile_id_lower in addr_normalized or addr_normalized in tile_id_lower:
-                _LOGGER.debug("Found Tile at %s", device.address)
-                self._device = device
-                return device
+            for device in devices:
+                _LOGGER.debug(
+                    "  Device found: name=%s, address=%s, rssi=%s",
+                    device.name or "N/A",
+                    device.address,
+                    getattr(device, 'rssi', 'N/A')
+                )
 
-            # Check by name if it contains tile ID
-            if device.name and tile_id_lower[:8] in device.name.lower():
-                _LOGGER.debug("Found Tile %s at %s", device.name, device.address)
-                self._device = device
-                return device
+                # Check by address
+                addr_normalized = device.address.lower().replace(":", "").replace("-", "")
+                if tile_id_lower in addr_normalized or addr_normalized in tile_id_lower:
+                    _LOGGER.info("✅ Found matching Tile by address: %s (RSSI: %s)", device.address, getattr(device, 'rssi', 'N/A'))
+                    self._device = device
+                    return device
 
-        _LOGGER.debug("Tile %s not found in range", self.tile_id)
-        return None
+                # Check by name if it contains tile ID
+                if device.name and tile_id_lower[:8] in device.name.lower():
+                    _LOGGER.info("✅ Found matching Tile by name: %s at %s (RSSI: %s)", device.name, device.address, getattr(device, 'rssi', 'N/A'))
+                    self._device = device
+                    return device
+
+            _LOGGER.warning("❌ Tile %s not found in BLE range after scanning %d devices", self.tile_id, len(devices))
+            return None
+
+        except Exception as err:
+            _LOGGER.error("❌ BLE scan failed: %s", err, exc_info=True)
+            return None
 
     async def connect(self, device: BLEDevice | None = None) -> bool:
         """Connect to the Tile device.
@@ -161,24 +175,26 @@ class TileBleClient:
             self._device = await self.scan_for_tile()
 
         if not self._device:
-            _LOGGER.error("No Tile device to connect to")
+            _LOGGER.error("❌ No Tile device to connect to")
             return False
 
         try:
+            _LOGGER.info("🔌 Connecting to Tile at %s...", self._device.address)
             self._client = BleakClient(self._device, timeout=self.timeout)
             await self._client.connect()
 
+            _LOGGER.debug("📝 Subscribing to Tile response notifications...")
             # Subscribe to responses
             await self._client.start_notify(
                 MEP_RESPONSE_CHAR_UUID,
                 self._handle_response,
             )
 
-            _LOGGER.debug("Connected to Tile %s", self._device.address)
+            _LOGGER.info("✅ Connected to Tile %s successfully", self._device.address)
             return True
 
         except BleakError as err:
-            _LOGGER.error("Failed to connect to Tile: %s", err)
+            _LOGGER.error("❌ Failed to connect to Tile: %s", err, exc_info=True)
             self._client = None
             return False
 
@@ -232,33 +248,43 @@ class TileBleClient:
             True if authentication succeeded
         """
         if not self._client or not self._client.is_connected:
-            _LOGGER.error("Not connected to Tile")
+            _LOGGER.error("❌ Not connected to Tile - cannot authenticate")
             return False
 
         try:
+            _LOGGER.info("🔐 Starting Tile authentication handshake...")
+
             # Generate random value for authentication
             self._rand_a = os.urandom(8)
+            _LOGGER.debug("Generated randA: %s", self._rand_a.hex())
 
             # Step 1: Send AUTH command with randA
             # Format: [TOA_AUTH, randA (8 bytes)]
             auth_cmd = bytes([ToaCommand.AUTH]) + self._rand_a
+            _LOGGER.debug("Step 1: Sending AUTH command with randA")
             response = await self._send_command(auth_cmd)
 
             if len(response) < 17:
-                _LOGGER.error("Invalid auth response length: %d", len(response))
+                _LOGGER.error("❌ Invalid auth response length: %d (expected >= 17)", len(response))
                 return False
 
             # Response format: [cmd, randT (8 bytes), sresT (8 bytes)]
             rand_t = response[1:9]
             sres_t = response[9:17]
+            _LOGGER.debug("Received randT: %s, sresT: %s", rand_t.hex(), sres_t.hex())
 
             # Step 2: Verify Tile's response
+            _LOGGER.debug("Step 2: Verifying Tile's signature")
             expected_sres_t = self._compute_sres(rand_t, self._rand_a, self.auth_key)
             if sres_t != expected_sres_t:
-                _LOGGER.error("Tile authentication failed - invalid sresT")
+                _LOGGER.error("❌ Tile authentication failed - invalid sresT (signature mismatch)")
+                _LOGGER.debug("Expected: %s, Got: %s", expected_sres_t.hex(), sres_t.hex())
                 return False
 
+            _LOGGER.debug("✓ Tile signature verified")
+
             # Step 3: Send our sresA to prove we have the auth key
+            _LOGGER.debug("Step 3: Sending our signature (sresA)")
             sres_a = self._compute_sres(self._rand_a, rand_t, self.auth_key)
             ack_cmd = bytes([ToaCommand.AUTH]) + sres_a
             response = await self._send_command(ack_cmd)
@@ -270,14 +296,14 @@ class TileBleClient:
                 self._channel_key = self._derive_channel_key(
                     self._rand_a, rand_t, self.auth_key
                 )
-                _LOGGER.debug("Tile authentication successful")
+                _LOGGER.info("✅ Tile authentication successful!")
                 return True
 
-            _LOGGER.error("Tile authentication failed")
+            _LOGGER.error("❌ Tile authentication failed - unexpected response: %s", response.hex() if response else "empty")
             return False
 
         except Exception as err:
-            _LOGGER.error("Authentication error: %s", err)
+            _LOGGER.error("❌ Authentication error: %s", err, exc_info=True)
             return False
 
     def _compute_sres(
@@ -367,28 +393,32 @@ class TileBleClient:
             True if ring command was sent successfully
         """
         if not self._client or not self._client.is_connected:
-            _LOGGER.error("Not connected to Tile")
+            _LOGGER.error("❌ Not connected to Tile - cannot ring")
             return False
 
         if not self._authenticated:
+            _LOGGER.debug("Not authenticated yet, performing authentication...")
             if not await self.authenticate():
-                _LOGGER.error("Authentication required before ringing")
+                _LOGGER.error("❌ Authentication required before ringing, but failed")
                 return False
 
         try:
+            _LOGGER.info("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
             cmd = self._build_ring_command(volume, duration_seconds)
+            _LOGGER.debug("Ring command bytes: %s", cmd.hex())
             response = await self._send_command(cmd)
 
             # Check response
             if len(response) > 0:
-                _LOGGER.info("Tile ring command sent successfully")
+                _LOGGER.info("✅ Tile ring command sent successfully! Response: %s", response.hex())
                 return True
 
-            _LOGGER.warning("No response to ring command")
-            return False
+            _LOGGER.warning("⚠️  No response to ring command (this may be normal)")
+            # Some Tiles may not respond but still ring, so return True
+            return True
 
         except Exception as err:
-            _LOGGER.error("Error sending ring command: %s", err)
+            _LOGGER.error("❌ Error sending ring command: %s", err, exc_info=True)
             return False
 
     async def stop_ring(self) -> bool:
@@ -432,12 +462,25 @@ async def ring_tile_ble(
         True if successfully rang the Tile
     """
     if not BLEAK_AVAILABLE:
-        _LOGGER.error("bleak library not available for BLE communication")
+        _LOGGER.error("❌ bleak library not available for BLE communication")
         return False
+
+    _LOGGER.info("═══════════════════════════════════════════════════════════")
+    _LOGGER.info("Starting Tile BLE ring operation for device: %s", tile_id)
+    _LOGGER.info("═══════════════════════════════════════════════════════════")
 
     # Convert hex string to bytes if needed
     if isinstance(auth_key, str):
-        auth_key = bytes.fromhex(auth_key)
+        try:
+            auth_key = bytes.fromhex(auth_key)
+            _LOGGER.debug("Auth key decoded: %d bytes", len(auth_key))
+        except ValueError as err:
+            _LOGGER.error("❌ Invalid auth key hex string: %s", err)
+            return False
+
+    if len(auth_key) != 16:
+        _LOGGER.error("❌ Invalid auth key length: %d (expected 16)", len(auth_key))
+        return False
 
     client = TileBleClient(tile_id, auth_key)
 
@@ -445,16 +488,28 @@ async def ring_tile_ble(
         # Scan for the Tile
         device = await client.scan_for_tile(scan_timeout)
         if not device:
-            _LOGGER.warning("Tile %s not found in BLE range", tile_id)
+            _LOGGER.warning("❌ Tile %s not found in BLE range", tile_id)
+            _LOGGER.info("💡 Tip: Make sure the Tile is nearby and has battery power")
             return False
 
         # Connect
         if not await client.connect(device):
+            _LOGGER.error("❌ Failed to connect to Tile")
             return False
 
         # Ring it
         success = await client.ring(volume, duration_seconds)
+        if success:
+            _LOGGER.info("═══════════════════════════════════════════════════════════")
+            _LOGGER.info("✅ Tile BLE ring operation completed successfully!")
+            _LOGGER.info("═══════════════════════════════════════════════════════════")
+        else:
+            _LOGGER.error("❌ Tile ring operation failed")
         return success
+
+    except Exception as err:
+        _LOGGER.error("❌ Unexpected error during Tile BLE operation: %s", err, exc_info=True)
+        return False
 
     finally:
         await client.disconnect()

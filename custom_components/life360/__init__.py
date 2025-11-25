@@ -26,6 +26,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     DOMAIN,
     SERVICE_BUZZ_JIOBIT,
+    SERVICE_GET_DEVICES,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
     SERVICE_RING_DEVICE,
@@ -273,6 +274,91 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         return {"integrations": all_integrations}
 
     hass.services.async_register(DOMAIN, SERVICE_GET_INTEGRATIONS, get_integrations)
+
+    async def get_devices(call: ServiceCall) -> dict:
+        """Get all Tile/Jiobit devices with their IDs for easy reference."""
+        _LOGGER.debug("Service %s called", SERVICE_GET_DEVICES)
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return {"devices": [], "circles": []}
+
+        all_devices = []
+        all_circles = {}
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                _LOGGER.debug("Entry %s has no runtime_data, skipping", entry.entry_id)
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            _LOGGER.debug("Fetching devices from coordinator")
+
+            # Get circles
+            circles_data = coordinator.data.circles
+            for cid, circle_data in circles_data.items():
+                circle_name = circle_data.name if hasattr(circle_data, 'name') else str(cid)
+                if cid not in all_circles:
+                    all_circles[str(cid)] = circle_name
+
+            # Trigger metadata fetch to populate device caches
+            for cid in circles_data.keys():
+                from .helpers import CircleID
+                await coordinator._fetch_device_metadata(CircleID(cid))
+
+            # Get devices from the caches
+            device_names = coordinator._device_name_cache
+            device_categories = coordinator._device_category_cache
+            tile_ble_ids = coordinator._tile_ble_id_cache
+            tile_auth_keys = coordinator._tile_auth_cache
+
+            _LOGGER.debug("Found %d devices in name cache", len(device_names))
+
+            for device_id, device_name in device_names.items():
+                category = device_categories.get(device_id, "unknown")
+                has_ble = device_id in tile_ble_ids
+                has_auth = device_id in tile_auth_keys
+                ble_id = tile_ble_ids.get(device_id, "")
+
+                device_info = {
+                    "id": device_id,
+                    "name": device_name,
+                    "category": category,
+                    "ble_capable": has_ble and has_auth,
+                }
+
+                if ble_id:
+                    device_info["ble_id"] = ble_id
+
+                all_devices.append(device_info)
+
+        # Convert circles dict to list
+        circles_list = [
+            {"id": cid, "name": name}
+            for cid, name in all_circles.items()
+        ]
+
+        result = {
+            "devices": all_devices,
+            "circles": circles_list,
+        }
+
+        # Fire an event with the device data
+        hass.bus.async_fire(
+            f"{DOMAIN}_devices",
+            result,
+        )
+
+        _LOGGER.info(
+            "Service %s completed: Retrieved %d devices and %d circles",
+            SERVICE_GET_DEVICES,
+            len(all_devices),
+            len(circles_list),
+        )
+        return result
+
+    hass.services.async_register(DOMAIN, SERVICE_GET_DEVICES, get_devices)
 
     _BUZZ_JIOBIT_SCHEMA = vol.Schema({
         vol.Required("device_id"): cv.string,

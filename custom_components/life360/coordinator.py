@@ -1401,6 +1401,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
+        # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
@@ -1416,9 +1417,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
 
-            # Generate a unique ID that mimics Android format
+            # Generate a unique ID (hass...)
             entry_id = self.config_entry.entry_id.replace("-", "")
-            device_id = f"android{entry_id[:24]}"
+            device_id = f"hass{entry_id[:24]}"
             
             ce_id = str(uuid.uuid4())
             ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -1435,36 +1436,22 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # FIX: Added 'version' and 'deviceVersion' to satisfy API validation
+            # Payload: iOS simulation (This passed validation before except for 'name')
             payload = {
-                "appId": "com.life360.android.safetymapd",
+                "appId": "com.life360.ios.safety",
                 "deviceId": device_id,
-                "deviceUdid": device_id,
-                "os": "android",
-                "osVersion": "13.0",
-                "appVersion": "25.45.0",
+                "udid": device_id,
+                "os": "iOS",
+                "model": "iPhone15,2", 
+                "manufacturer": "Apple",
+                "name": "Home Assistant", # <--- The missing key that caused the HTTP 400 before
+                "osVersion": "17.0",
+                "appVersion": "24.1.0",
                 "pushToken": "",
-                "deviceType": "mobile",
+                "deviceType": "ios",
                 "language": "en_US",
                 "country": "US",
-                "installId": device_id,
-                
-                # Naming
-                "name": "Pixel 6",
-                "deviceName": "Pixel 6",
-                
-                # Hardware Profile
-                "model": "Pixel 6",
-                "deviceModel": "Pixel 6",
-                "manufacturer": "Google",
-                "deviceManufacturer": "Google",
-                "brand": "google",
-                "product": "oriole",
-                "board": "oriole",
-
-                # NEW FIX: Version info
-                "version": "13.0",
-                "deviceVersion": "13.0"
+                "installId": device_id
             }
 
             session = self._acct_data[aid].session

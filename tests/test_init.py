@@ -101,6 +101,7 @@ def cfg_options(
     driving_speed: float | None = None,
     max_gps_accuracy: int | None = None,
     verbosity: int = 0,
+    device_id: str | None = None,
 ) -> dict[str, Any]:
     """Create config options."""
     return {
@@ -112,6 +113,7 @@ def cfg_options(
         "driving_speed": driving_speed,
         "max_gps_accuracy": max_gps_accuracy,
         "verbosity": verbosity,
+        "device_id": device_id,
     }
 
 

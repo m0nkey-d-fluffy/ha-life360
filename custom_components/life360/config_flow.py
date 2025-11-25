@@ -47,6 +47,7 @@ from .const import (
     COMM_TIMEOUT,
     CONF_ACCOUNTS,
     CONF_AUTHORIZATION,
+    CONF_DEVICE_ID,
     CONF_DRIVING_SPEED,
     CONF_MAX_GPS_ACCURACY,
     CONF_SHOW_DRIVING,
@@ -122,6 +123,8 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
                 float | None, user_input.get(CONF_DRIVING_SPEED)
             )
             self._opts.driving = cast(bool, user_input[CONF_SHOW_DRIVING])
+            device_id = cast(str | None, user_input.get(CONF_DEVICE_ID))
+            self._opts.device_id = device_id.strip() if device_id else None
             if self.show_advanced_options:
                 self._opts.verbosity = int(user_input[CONF_VERBOSITY])
 
@@ -146,6 +149,9 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
                     )
                 ),
                 vol.Required(CONF_SHOW_DRIVING): BooleanSelector(),
+                vol.Optional(CONF_DEVICE_ID): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
             }
         )
         if self._opts.max_gps_accuracy is not None:
@@ -159,6 +165,10 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
         data_schema = self.add_suggested_values_to_schema(
             data_schema, {CONF_SHOW_DRIVING: self._opts.driving}
         )
+        if self._opts.device_id:
+            data_schema = self.add_suggested_values_to_schema(
+                data_schema, {CONF_DEVICE_ID: self._opts.device_id}
+            )
         if self.show_advanced_options:
             data_schema = data_schema.extend(
                 {

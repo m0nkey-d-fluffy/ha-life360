@@ -20,6 +20,7 @@ from homeassistant.util.unit_conversion import DistanceConverter
 from .const import (
     CONF_ACCOUNTS,
     CONF_AUTHORIZATION,
+    CONF_DEVICE_ID,
     CONF_DRIVING_SPEED,
     CONF_MAX_GPS_ACCURACY,
     CONF_SHOW_DRIVING,
@@ -66,6 +67,7 @@ class ConfigOptions:
     driving_speed: float | None = None
     max_gps_accuracy: int | None = None
     verbosity: int = 0
+    device_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dict representation of the data."""
@@ -84,6 +86,7 @@ class ConfigOptions:
             data[CONF_DRIVING_SPEED],
             data[CONF_MAX_GPS_ACCURACY],
             data[CONF_VERBOSITY],
+            data.get(CONF_DEVICE_ID),
         )
 
 

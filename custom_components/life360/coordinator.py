@@ -1420,118 +1420,31 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     async def _get_or_register_device_id(
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
-        """Get a registered device ID for API requests.
+        """Get configured device ID for API requests.
 
-        Generates a unique Android-style device ID and registers it with Life360.
-        The registration response is logged to verify what device ID the API returns.
+        Returns the device ID from config options if provided by the user.
+        If no device ID is configured, returns None and Tile devices will show generic names.
+
+        Users can obtain their device ID from their Life360 Android/iOS app installation.
         """
         # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
-        if self._device_registration_attempted:
-            return None
+        # Check if user configured a device ID
+        configured_device_id = self._options.device_id
+        if configured_device_id:
+            self._registered_device_id = configured_device_id
+            _LOGGER.info("Using configured device ID: %s", configured_device_id)
+            return self._registered_device_id
 
-        self._device_registration_attempted = True
-
-        if aid not in self._acct_data:
-            return None
-
-        try:
-            # Register Home Assistant as a "device" with Life360
-            url = f"{API_BASE_URL}/v3/users/devices"
-
-            # Generate Android-style device ID based on config entry
-            entry_id = self.config_entry.entry_id.replace("-", "")
-            device_id = f"android{entry_id[:22]}"
-            
-            ce_id = str(uuid.uuid4())
-            ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-            headers = {
-                "Authorization": f"Bearer {acct.authorization}",
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": API_USER_AGENT,
-                "ce-type": "com.life360.user.devices.v1",
-                "ce-id": ce_id,
-                "ce-specversion": "1.0",
-                "ce-time": ce_time,
-                "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
-            }
-
-            # Payload: Form-encoded data matching Android app format
-            # The API expects application/x-www-form-urlencoded, not JSON
-            payload = {
-                "appId": "com.life360.android.safetymapd",
-                "appVersion": "25.45.0",
-                "deviceUdid": device_id,  # MUST be deviceUdid, not udid
-                "deviceName": "homeassistant",
-                "deviceType": "android",
-                "deviceModel": "Home Assistant",
-                "deviceVersion": "12",
-                "deviceToken": "",
-                "carrier": "unknown",
-                "adUdid": device_id,
-                "adLimit": "0"
-            }
-
-            session = self._acct_data[aid].session
-            _LOGGER.info("🔧 Attempting device registration with ID: %s", device_id)
-
-            async with session.post(url, headers=headers, data=payload) as resp:
-                if resp.status in (200, 201):
-                    data = await resp.json()
-                    _LOGGER.info("✅ Registration SUCCESS - HTTP %s", resp.status)
-                    _LOGGER.info("📦 Full response data: %s", data)
-                    _LOGGER.info("📦 Response type: %s", type(data).__name__)
-
-                    # Extract device ID from response
-                    returned_device_id = None
-                    if isinstance(data, dict):
-                        # Response is a dictionary with device info
-                        returned_device_id = (
-                            data.get("deviceId") or
-                            data.get("deviceUdid") or
-                            data.get("id")
-                        )
-                        _LOGGER.info("📋 Extracted from dict - deviceId: %s, deviceUdid: %s, id: %s",
-                                   data.get("deviceId"), data.get("deviceUdid"), data.get("id"))
-                    elif isinstance(data, list) and len(data) > 0:
-                        # Response is a list, use first item
-                        device_info = data[0]
-                        returned_device_id = (
-                            device_info.get("deviceId") or
-                            device_info.get("deviceUdid") or
-                            device_info.get("id")
-                        )
-                        _LOGGER.info("📋 Extracted from list[0] - deviceId: %s, deviceUdid: %s, id: %s",
-                                   device_info.get("deviceId"), device_info.get("deviceUdid"), device_info.get("id"))
-                    else:
-                        _LOGGER.warning("⚠️ Empty response or unrecognized format")
-
-                    # Use returned ID if available, otherwise use what we sent
-                    if returned_device_id:
-                        self._registered_device_id = returned_device_id
-                        _LOGGER.info("✅ Using device ID from API response: %s", returned_device_id)
-                        if returned_device_id != device_id:
-                            _LOGGER.warning("⚠️ API returned DIFFERENT device ID than we sent!")
-                            _LOGGER.warning("   Sent: %s", device_id)
-                            _LOGGER.warning("   Got:  %s", returned_device_id)
-                    else:
-                        self._registered_device_id = device_id
-                        _LOGGER.info("ℹ️ No device ID in response, using what we sent: %s", device_id)
-
-                    return self._registered_device_id
-                elif resp.status == 409:
-                    self._registered_device_id = device_id
-                    _LOGGER.info("Device already registered, using: %s", device_id)
-                    return self._registered_device_id
-                else:
-                    resp_text = await resp.text()
-                    _LOGGER.error("Registration FAILED: HTTP %s - %s", resp.status, resp_text)
-        except Exception as err:
-            _LOGGER.exception("Error registering device: %s", err)
+        # No device ID configured
+        if not self._device_registration_attempted:
+            self._device_registration_attempted = True
+            _LOGGER.info(
+                "No device ID configured. Tile/Jiobit devices will show generic names. "
+                "To see actual device names, configure your device ID in integration options."
+            )
 
         return None
 

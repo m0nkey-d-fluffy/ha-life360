@@ -35,6 +35,7 @@ STATE_DRIVING = "driving"
 
 CONF_ACCOUNTS = "accounts"
 CONF_AUTHORIZATION = "authorization"
+CONF_DEVICE_ID = "device_id"
 CONF_DRIVING_SPEED = "driving_speed"
 CONF_MAX_GPS_ACCURACY = "max_gps_accuracy"
 CONF_SHOW_DRIVING = "driving"

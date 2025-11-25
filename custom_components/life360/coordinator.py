@@ -1401,11 +1401,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
-        # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
-        # Only attempt registration once per session
         if self._device_registration_attempted:
             return None
 
@@ -1418,7 +1416,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
 
-            # Generate a unique ID that mimics Android format
+            # Generate unique ID with android prefix
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1437,7 +1435,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # Payload updated with "name" to fix HTTP 400 error
+            # PAYLOAD UPDATE: sending BOTH name and deviceName to satisfy the server
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
@@ -1445,7 +1443,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "os": "android",
                 "model": "HomeAssistant",
                 "manufacturer": "HA",
-                "name": "Home Assistant",  # <--- THIS IS THE MISSING KEY
+                "name": "Home Assistant",       # Attempt 1
+                "deviceName": "Home Assistant", # Attempt 2 (Likely the winner)
                 "osVersion": "12",
                 "appVersion": "25.45.0",
                 "pushToken": "",

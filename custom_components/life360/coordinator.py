@@ -1401,11 +1401,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
-        # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id
 
-        # Only attempt registration once per session
         if self._device_registration_attempted:
             return None
 
@@ -1415,10 +1413,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             return None
 
         try:
-            # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
-
-            # Generate a unique ID that mimics Android format
+            
+            # Generate a unique Android-style ID
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1437,8 +1434,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # PAYLOAD UPDATE: Sending redundant keys to satisfy the API
-            # We now include deviceModel and deviceManufacturer
+            # PAYLOAD UPDATE: Mimicking a real Samsung Galaxy Device
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
@@ -1452,17 +1448,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "country": "US",
                 "installId": device_id,
                 
-                # Naming keys
-                "name": "Home Assistant",
-                "deviceName": "Home Assistant",
-                
-                # Model keys (The log asked for this!)
-                "model": "HomeAssistant",
-                "deviceModel": "HomeAssistant",
-                
-                # Manufacturer keys (Preventing the next likely error)
-                "manufacturer": "HA",
-                "deviceManufacturer": "HA"
+                # Real Device Profile (Samsung Galaxy Note 5)
+                "model": "SM-N920I", 
+                "deviceModel": "SM-N920I",
+                "manufacturer": "samsung",
+                "deviceManufacturer": "samsung",
+                "name": "Samsung SM-N920I",
+                "deviceName": "Samsung SM-N920I"
             }
 
             session = self._acct_data[aid].session

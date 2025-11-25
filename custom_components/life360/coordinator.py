@@ -1422,17 +1422,25 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     ) -> str | None:
         """Get a registered device ID for API requests.
 
-        Instead of registering a new device, we use an existing Android device ID
-        that is already registered with Life360. This allows the /v6/devices
-        metadata endpoint to work properly.
+        Generates a unique Android-style device ID based on the Home Assistant
+        installation. This mimics the format used by the Android app
+        (e.g., "androidXxYyZz1234AbCdEf5678Gh") but is unique per installation.
         """
-        # Use the existing Android device ID from the user's phone
-        # This device is already registered with Life360
-        android_device_id = "androidXxYyZz1234AbCdEf5678Gh"
+        # Return cached ID if available
+        if self._registered_device_id:
+            return self._registered_device_id
 
-        _LOGGER.info("Using existing Android device ID: %s", android_device_id)
-        self._registered_device_id = android_device_id
-        return android_device_id
+        # Generate a unique device ID based on the config entry ID
+        # Format: "android" + base64-like string (mimics real Android device IDs)
+        entry_id = self.config_entry.entry_id.replace("-", "")
+
+        # Create an Android-style device ID using the entry_id
+        # Use first 24 chars after "android" prefix to match Android app pattern
+        device_id = f"android{entry_id[:22]}"
+
+        _LOGGER.info("Generated Android-style device ID: %s", device_id)
+        self._registered_device_id = device_id
+        return device_id
 
         try:
             # Register Home Assistant as a "device" with Life360

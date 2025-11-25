@@ -1413,8 +1413,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             return None
 
         try:
+            # Register Home Assistant as a "device" with Life360
             url = f"{API_BASE_URL}/v3/users/devices"
-            
+
+            # Generate a unique ID that mimics Android format
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"android{entry_id[:24]}"
             
@@ -1433,14 +1435,14 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # FIX: Use a real, standard Android device profile
+            # FIX: Added 'version' and 'deviceVersion' to satisfy API validation
             payload = {
                 "appId": "com.life360.android.safetymapd",
                 "deviceId": device_id,
                 "deviceUdid": device_id,
                 "os": "android",
                 "osVersion": "13.0",
-                "appVersion": "24.1.0",
+                "appVersion": "25.45.0",
                 "pushToken": "",
                 "deviceType": "mobile",
                 "language": "en_US",
@@ -1451,14 +1453,18 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "name": "Pixel 6",
                 "deviceName": "Pixel 6",
                 
-                # Hardware Profile - Google Pixel 6
+                # Hardware Profile
                 "model": "Pixel 6",
                 "deviceModel": "Pixel 6",
                 "manufacturer": "Google",
                 "deviceManufacturer": "Google",
                 "brand": "google",
                 "product": "oriole",
-                "board": "oriole"
+                "board": "oriole",
+
+                # NEW FIX: Version info
+                "version": "13.0",
+                "deviceVersion": "13.0"
             }
 
             session = self._acct_data[aid].session

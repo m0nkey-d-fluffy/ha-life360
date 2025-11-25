@@ -1421,6 +1421,11 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
         """Get a registered device ID for API requests, registering if needed."""
+        # TESTING: Skip device registration entirely to see if metadata endpoint
+        # works without x-device-id header
+        _LOGGER.info("Skipping device registration - testing if metadata works without it")
+        return None
+
         # Return cached ID if available
         if self._registered_device_id:
             return self._registered_device_id

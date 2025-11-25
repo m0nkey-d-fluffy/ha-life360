@@ -2,6 +2,8 @@
 
 This document explains how the Life360 integration supports Tile Bluetooth trackers and Jiobit pet GPS trackers.
 
+> **💡 Want to add ring buttons to your dashboard?** See the **[Dashboard Setup Guide](dashboard-setup.md)** for easy copy-paste configurations!
+
 ## Overview
 
 Life360 allows users to link third-party tracking devices to their account. This integration automatically discovers and creates Home Assistant entities for:

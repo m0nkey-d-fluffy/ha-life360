@@ -4,6 +4,13 @@ This guide shows you how to add Tile and Jiobit devices to your Home Assistant d
 
 ## Quick Setup: Tile Ring Button
 
+### Choose Your Style
+
+**Option A: Two Buttons** - Separate Ring and Stop buttons (easier, no setup required)
+**Option B: Single Toggle Button** - One button that alternates ring/stop (requires helper setup, see below)
+
+We'll start with Option A (easier), then show Option B at the end.
+
 ### Step 1: Find Your Tile Entity ID
 
 1. Go to **Settings** → **Devices & Services** → **Life360**
@@ -333,6 +340,130 @@ Common icons you can use:
 | Luggage | `mdi:bag-suitcase` |
 
 Browse more at: [Material Design Icons](https://pictogrammers.com/library/mdi/)
+
+## Advanced: Single Toggle Button
+
+Want ONE button that rings when pressed, then stops when pressed again? Here's how!
+
+### The Simpler Way (No State Tracking)
+
+Just use a single button that always rings for a short duration. Press it multiple times if needed:
+
+```yaml
+type: button
+entity: device_tracker.tile_1fd609ad
+name: Find Keys
+icon: mdi:key-wireless
+show_name: true
+tap_action:
+  action: perform-action
+  perform_action: life360.ring_device
+  data:
+    entity_id: device_tracker.tile_1fd609ad
+    duration: 10
+    strength: 2
+```
+
+Every tap = 10-second beep. Simple and effective!
+
+### The Advanced Way (True Toggle with State)
+
+For a proper toggle that tracks whether the Tile is ringing:
+
+**Step 1: Create a Helper**
+1. Go to **Settings** → **Devices & Services** → **Helpers**
+2. Click **Create Helper** → **Toggle**
+3. Name it: `Tile Keys Ringing`
+4. Click **Create**
+5. Note the entity ID (e.g., `input_boolean.tile_keys_ringing`)
+
+**Step 2: Create an Automation to Auto-Stop**
+
+```yaml
+automation:
+  - alias: "Tile Keys - Auto Stop After Duration"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.tile_keys_ringing
+        to: "on"
+    action:
+      - delay:
+          seconds: 30  # Match your ring duration
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.tile_keys_ringing
+```
+
+**Step 3: Create Toggle Button Card**
+
+```yaml
+type: button
+entity: input_boolean.tile_keys_ringing
+name: Keys
+icon: mdi:key
+tap_action:
+  action: toggle
+hold_action:
+  action: perform-action
+  perform_action: life360.stop_ring_device
+  data:
+    entity_id: device_tracker.tile_1fd609ad
+state:
+  - value: "on"
+    icon: mdi:bell-ring
+    styles:
+      card:
+        - background-color: "#ff9800"
+  - value: "off"
+    icon: mdi:key
+    styles:
+      card:
+        - background-color: var(--primary-background-color)
+```
+
+**Step 4: Create Automations to Ring/Stop**
+
+```yaml
+automation:
+  # Ring when toggled ON
+  - alias: "Tile Keys - Start Ringing"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.tile_keys_ringing
+        to: "on"
+    action:
+      - service: life360.ring_device
+        data:
+          entity_id: device_tracker.tile_1fd609ad
+          duration: 30
+          strength: 2
+
+  # Stop when toggled OFF
+  - alias: "Tile Keys - Stop Ringing"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.tile_keys_ringing
+        to: "off"
+    action:
+      - service: life360.stop_ring_device
+        data:
+          entity_id: device_tracker.tile_1fd609ad
+```
+
+Now you have:
+- ✅ One button that changes color when ringing
+- ✅ Tap to ring, tap again to stop
+- ✅ Hold to force-stop
+- ✅ Auto-stops after duration
+
+**Which Method Should You Use?**
+
+| Method | Pros | Cons |
+|--------|------|------|
+| **Simpler** | No setup, works immediately | Always rings full duration |
+| **Advanced** | True toggle, visual feedback | Requires helpers + automations |
+
+**Recommendation:** Start with the simpler method. It's more reliable and easier to set up!
 
 ## Next Steps
 

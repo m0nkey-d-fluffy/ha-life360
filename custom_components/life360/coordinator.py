@@ -1496,7 +1496,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         return None
 
-    async def _fetch_device_metadata(self, cid: CircleID) -> bool:
+ async def _fetch_device_metadata(self, cid: CircleID) -> bool:
         """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
 
         This endpoint returns all Tile/Jiobit devices for the user with their names and metadata.
@@ -1559,7 +1559,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         if not items and isinstance(data, list):
                             items = data
 
-for item in items:
+                        # =========================================================================
+                        # PATCH: Loop to handle new API keys for Tiles and Jiobits
+                        # =========================================================================
+                        for item in items:
                             item_type = item.get("type", "device")
 
                             # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
@@ -1622,6 +1625,7 @@ for item in items:
                                     self._tile_ble_id_cache[tile_device_id] = tile_device_id
                                 except Exception:
                                     _LOGGER.debug("Failed to decode auth key for %s", device_id)
+                        # =========================================================================
 
                         _LOGGER.debug(
                             "Cached metadata for %d devices", len(self._device_name_cache)

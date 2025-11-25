@@ -1483,6 +1483,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 ce_id = str(uuid.uuid4())
                 ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
+                # Set ce-source to match Android format when using device ID
+                # Format from real Android app: /ANDROID/12/device-model/device_id
+                if registered_device_id and registered_device_id.startswith("android"):
+                    ce_source = f"/ANDROID/14/HomeAssistant/{registered_device_id}"
+                elif registered_device_id and registered_device_id.startswith("ios"):
+                    ce_source = f"/IOS/17/HomeAssistant/{registered_device_id}"
+                else:
+                    ce_source = f"/HOMEASSISTANT/{DOMAIN}"
+
                 headers = {
                     "Authorization": f"Bearer {acct.authorization}",
                     "Accept": "application/json",
@@ -1491,7 +1500,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     "ce-id": ce_id,
                     "ce-specversion": "1.0",
                     "ce-time": ce_time,
-                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+                    "ce-source": ce_source,
                 }
 
                 # Only add x-device-id if we have a registered one

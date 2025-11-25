@@ -1437,28 +1437,31 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # Device registration payload
-            # --- iOS SPOOFING FIX (Updated V2) ---
+            # --- REGISTRATION FIX START ---
             
-            # Device registration payload - Spoofing an iPhone
+            # Use the generated device_id (hass...) to keep it unique per installation
+            # This ensures every user gets their own unique ID automatically.
+            
+            # Payload: Spoofing a generic iOS installation 
+            # We include multiple variations of ID keys to satisfy different API versions
             payload = {
                 "deviceId": device_id,
                 "udid": device_id,
-                # Provide both keys to satisfy variable API requirements
-                "appId": "com.life360.ios.safety", 
+                "appId": "com.life360.ios.safety",
                 "applicationId": "com.life360.ios.safety", 
+                "bundleId": "com.life360.ios.safety",
                 "os": "iOS",
-                "model": "iPhone15,2",
+                "model": "iPhone15,2",  # iPhone 14 Pro
                 "manufacturer": "Apple",
                 "osVersion": "17.0",
                 "appVersion": "24.1.0",
                 "pushToken": "",         
                 "deviceType": "ios",
                 "language": "en_US",
-                "installId": device_id
+                "installId": device_id,
+                "countryCode": "US"
             }
-            # --- iOS SPOOFING FIX END ---
-
+            # --- REGISTRATION FIX END ---
             session = self._acct_data[aid].session
             _LOGGER.debug("Registering Home Assistant as device: %s", device_id)
 

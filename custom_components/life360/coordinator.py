@@ -1405,13 +1405,6 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         The /v6/devices endpoint requires a valid x-device-id header that has been
         registered with Life360. This method attempts to register Home Assistant
         as a device if we don't have a cached ID.
-
-        Args:
-            aid: Account ID
-            acct: Account details with authorization
-
-        Returns:
-            Registered device ID string, or None if registration failed
         """
         # Return cached ID if available
         if self._registered_device_id:
@@ -1428,12 +1421,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         try:
             # Register Home Assistant as a "device" with Life360
-            # This mimics what the mobile apps do to get a valid x-device-id
             url = f"{API_BASE_URL}/v3/users/devices"
 
-            # Generate a unique but stable device ID for this Home Assistant instance
-            # Format similar to Android: "androidXXXXXXXXXXXXXXXXXXXXXXXXX"
-            # We use "hass" prefix to identify it's from Home Assistant
+            # Generate a unique but stable device ID
             entry_id = self.config_entry.entry_id.replace("-", "")
             device_id = f"hass{entry_id[:24]}"
 
@@ -1452,16 +1442,20 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
             }
 
-            # Device registration payload - minimal info to register
+            # Device registration payload
+            # FIX: Added appId and adjusted fields to match iOS User-Agent
             payload = {
+                "appId": "com.life360.ios.safetymapd",
                 "deviceId": device_id,
-                "os": "HomeAssistant",
-                "model": "Home Assistant",
-                "manufacturer": "Home Assistant",
-                "osVersion": "1.0",
-                "appVersion": "1.0",
-                "pushToken": "",  # Not using push notifications
-                "deviceType": "other",
+                "os": "iOS",
+                "model": "iPhone15,3", 
+                "manufacturer": "Apple",
+                "osVersion": "17.0",
+                "appVersion": "24.1.0",
+                "pushToken": "",
+                "deviceType": "mobile",
+                "language": "en_US",
+                "country": "US"
             }
 
             session = self._acct_data[aid].session
@@ -1471,7 +1465,6 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 if resp.status in (200, 201):
                     data = await resp.json()
                     _LOGGER.debug("Device registration response: %s", data)
-                    # The response should contain the device ID
                     self._registered_device_id = data.get("deviceId", device_id)
                     _LOGGER.info(
                         "Registered Home Assistant with Life360 as device: %s",
@@ -1479,8 +1472,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     )
                     return self._registered_device_id
                 elif resp.status == 409:
-                    # Conflict - device already registered, this is actually good!
-                    # Use our generated ID since it's already in the system
+                    # Conflict - device already registered, this is good!
                     self._registered_device_id = device_id
                     _LOGGER.debug("Device already registered, using: %s", device_id)
                     return self._registered_device_id

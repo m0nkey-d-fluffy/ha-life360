@@ -22,6 +22,10 @@ get_integrations:
   name: Get Connected Integrations
   description: Retrieve all connected integrations/apps from Life360. Returns information about linked services like Tile, Jiobit, etc.
 
+get_devices:
+  name: Get Devices and Circles
+  description: Retrieve all Tile/Jiobit devices and Life360 circles with their IDs. Use this to find device IDs and circle IDs needed for ring_device and other services. Returns device names, IDs, categories, BLE capabilities, and all circle IDs.
+
 buzz_jiobit:
   name: Buzz Jiobit Device
   description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound.

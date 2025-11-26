@@ -52,12 +52,11 @@ class TileAPIClient:
         self.session_token: str | None = None
         self.user_uuid: str | None = None
 
-    def _get_headers(self, include_session: bool = False, include_content_type: bool = False) -> dict[str, str]:
+    def _get_headers(self, include_session: bool = False) -> dict[str, str]:
         """Get API request headers.
 
         Args:
             include_session: Whether to include session token
-            include_content_type: Whether to include Content-Type header
 
         Returns:
             Headers dict
@@ -65,14 +64,12 @@ class TileAPIClient:
         headers = {
             "User-Agent": f"Tile/{TILE_APP_VERSION}",
             "Accept": "application/json",
+            "Content-Type": "application/json",
             "tile_api_version": TILE_API_VERSION,
             "tile_app_id": TILE_APP_ID,
             "tile_app_version": TILE_APP_VERSION,
             "tile_client_uuid": self.client_uuid,
         }
-
-        if include_content_type:
-            headers["Content-Type"] = "application/json"
 
         if include_session and self.session_token:
             headers["tile_session_id"] = self.session_token
@@ -99,11 +96,19 @@ class TileAPIClient:
                 "locale": "en-US",
             }
 
+            headers = self._get_headers()
+            _LOGGER.debug("PUT %s", client_url)
+            _LOGGER.debug("Request headers: %s", headers)
+            _LOGGER.debug("Request body: %s", client_data)
+
             async with self.session.put(
                 client_url,
-                headers=self._get_headers(include_content_type=True),
+                headers=headers,
                 json=client_data,
             ) as resp:
+                _LOGGER.debug("Response status: %s", resp.status)
+                _LOGGER.debug("Response headers: %s", dict(resp.headers))
+
                 if resp.status not in (200, 201):
                     text = await resp.text()
                     _LOGGER.error("Tile client registration failed: HTTP %s - %s", resp.status, text)
@@ -122,7 +127,7 @@ class TileAPIClient:
 
             async with self.session.post(
                 session_url,
-                headers=self._get_headers(include_content_type=True),
+                headers=self._get_headers(),
                 json=session_data,
             ) as resp:
                 if resp.status not in (200, 201):

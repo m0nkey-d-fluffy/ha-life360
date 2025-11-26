@@ -11,8 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum, auto
 from functools import partial
+import json
 import logging
 from math import ceil
+from pathlib import Path
+import sys
 from typing import Any, TypeVar, TypeVarTuple, cast
 import uuid
 
@@ -1582,6 +1585,84 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         return None
 
+    async def _fetch_v6_via_subprocess(
+        self, bearer_token: str, device_id: str, circle_id: str
+    ) -> dict | None:
+        """Fetch v6/devices data via subprocess using curl_cffi.
+
+        This bypasses Cloudflare WAF blocking by using curl_cffi's TLS fingerprinting
+        and session establishment in a separate Python process.
+
+        Args:
+            bearer_token: Life360 bearer token
+            device_id: Device ID for x-device-id header
+            circle_id: Circle ID for session establishment
+
+        Returns:
+            Device data dict on success, None on failure
+        """
+        # Locate the fetch_v6_devices.py script
+        script_path = Path(__file__).parent / "scripts" / "fetch_v6_devices.py"
+
+        if not script_path.exists():
+            _LOGGER.warning(
+                "fetch_v6_devices.py script not found at %s - falling back to direct API call",
+                script_path
+            )
+            return None
+
+        # Build command
+        cmd = [
+            sys.executable,  # Use same Python interpreter as HA
+            str(script_path),
+            bearer_token,
+            device_id or "",
+            circle_id or "",
+        ]
+
+        try:
+            _LOGGER.debug("Calling subprocess: %s", [cmd[0], cmd[1], "***", "***", "***"])
+
+            # Execute subprocess
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=30.0
+            )
+
+            if process.returncode == 0:
+                # Parse JSON from stdout
+                data = json.loads(stdout.decode())
+                _LOGGER.info("✓ Successfully fetched v6/devices via subprocess")
+                return data
+            else:
+                error_msg = stderr.decode().strip()
+                if "curl_cffi not installed" in error_msg:
+                    _LOGGER.warning(
+                        "curl_cffi not installed - install with: pip3 install curl_cffi"
+                    )
+                    _LOGGER.info(
+                        "Without curl_cffi, Tile/Jiobit devices will show generic names. "
+                        "The v6 API requires TLS fingerprinting to bypass Cloudflare WAF."
+                    )
+                else:
+                    _LOGGER.warning("Subprocess failed: %s", error_msg)
+                return None
+
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Subprocess timed out after 30 seconds")
+            return None
+        except json.JSONDecodeError as e:
+            _LOGGER.warning("Failed to parse subprocess output as JSON: %s", e)
+            return None
+        except Exception as e:
+            _LOGGER.warning("Unexpected error calling subprocess: %s", e)
+            return None
+
     async def _fetch_device_metadata(self, cid: CircleID) -> bool:
         """Fetch and cache device metadata (names, avatars, categories) from /v6/devices.
 
@@ -1612,179 +1693,157 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             # First try to get registered device ID, or register one if needed
             registered_device_id = await self._get_or_register_device_id(aid, acct)
 
+            # Skip if no device ID configured - v6 API requires it
+            if not registered_device_id:
+                _LOGGER.debug("No device ID configured - skipping v6 API call")
+                return True  # Not an error, just no device names available
+
             try:
-                # Use /v6/devices endpoint to get Tile/Jiobit device names and metadata
-                # This endpoint does NOT use circleid - it returns all devices for the user
-                url = f"{API_BASE_URL}/v6/devices?activationStates=activated,pending,pending_disassociated"
-
-                ce_id = str(uuid.uuid4())
-                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-                # Set ce-source and user-agent to match device platform when using device ID
-                # Format from real Android app: /ANDROID/12/device-model/device_id
-                if registered_device_id and registered_device_id.startswith("android"):
-                    ce_source = f"/ANDROID/14/HomeAssistant/{registered_device_id}"
-                    user_agent = "com.life360.android.safetymapd/KOKO/25.45.0 android/14"
-                elif registered_device_id and registered_device_id.startswith("ios"):
-                    ce_source = f"/IOS/17/HomeAssistant/{registered_device_id}"
-                    user_agent = "Life360/25.45.0 (iOS 17.0)"
-                else:
-                    ce_source = f"/HOMEASSISTANT/{DOMAIN}"
-                    user_agent = API_USER_AGENT
-
-                headers = {
-                    "Authorization": f"Bearer {acct.authorization}",
-                    "Accept": "application/json",
-                    "User-Agent": user_agent,
-                    "ce-type": "com.life360.device.devices.v1",
-                    "ce-id": ce_id,
-                    "ce-specversion": "1.0",
-                    "ce-time": ce_time,
-                    "ce-source": ce_source,
-                }
-
-                # Only add x-device-id if we have a registered one
-                if registered_device_id:
-                    headers["x-device-id"] = registered_device_id
-
-                session = self._acct_data[aid].session
-                _LOGGER.info(
-                    "→ Fetching device metadata from %s with x-device-id=%s",
-                    url, registered_device_id or "none"
+                # APPROACH 1: Try subprocess with curl_cffi first (bypasses Cloudflare)
+                # This uses TLS fingerprinting to mimic mobile app and avoid 403 errors
+                data = await self._fetch_v6_via_subprocess(
+                    bearer_token=acct.authorization,
+                    device_id=registered_device_id,
+                    circle_id=str(cid),
                 )
 
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        _LOGGER.debug("Device metadata response: %s", data)
+                # APPROACH 2: If subprocess fails, fall back to direct aiohttp call
+                # (This will likely get 403 Forbidden from Cloudflare, but we try anyway)
+                if data is None:
+                    _LOGGER.info("Subprocess failed, trying direct API call as fallback...")
 
-                        # Parse response - structure is data.items[]
-                        items = data.get("data", {}).get("items", []) if isinstance(data.get("data"), dict) else data.get("items", [])
-                        if not items and isinstance(data, list):
-                            items = data
+                    url = f"{API_BASE_URL}/v6/devices?activationStates=activated,pending,pending_disassociated"
 
-                        # =========================================================================
-                        # PATCH: Loop to handle new API keys for Tiles and Jiobits
-                        # =========================================================================
-                        _LOGGER.debug("Processing %d items from metadata response", len(items))
-                        for item in items:
-                            item_type = item.get("type", "device")
+                    ce_id = str(uuid.uuid4())
+                    ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-                            # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
-                            if item_type == "profile":
-                                profile_data = item.get("data", {})
-                                # Try both camelCase (old) and snake_case (new)
-                                tracker_id = profile_data.get("trackerId") or profile_data.get("tracker_id") or ""
-                                name = profile_data.get("name", "")
-                                
-                                if tracker_id and name:
-                                    self._device_name_cache[tracker_id] = name
-                                    _LOGGER.debug(f"Mapped Profile: {name} -> {tracker_id}")
-                                continue
-
-                            # FIX 2: Handle Tiles/Devices with new keys
-                            # Try 'id', 'deviceId', 'device_id'
-                            device_id = (
-                                item.get("id") or 
-                                item.get("deviceId") or 
-                                item.get("device_id") or 
-                                ""
-                            )
-                            
-                            if not device_id:
-                                continue
-
-                            # Try 'name', 'deviceName', 'device_name'
-                            name = (
-                                item.get("name") or 
-                                item.get("deviceName") or 
-                                item.get("device_name")
-                            )
-
-                            if name:
-                                self._device_name_cache[device_id] = name
-                                _LOGGER.debug(f"Mapped Device: {name} -> {device_id}")
-
-                            # Handle Avatar
-                            avatar = item.get("avatar") or item.get("avatar_url")
-                            if avatar:
-                                self._device_avatar_cache[device_id] = avatar
-
-                            # Handle Category
-                            category = item.get("category")
-                            if category:
-                                self._device_category_cache[device_id] = category
-
-                            # Handle Auth Key (for BLE)
-                            type_data = item.get("typeData") or item.get("type_data") or {}
-                            tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
-                            auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
-
-                            if tile_device_id and auth_key_b64:
-                                try:
-                                    auth_key = base64.b64decode(auth_key_b64)
-                                    self._tile_auth_cache[device_id] = auth_key
-                                    self._tile_ble_id_cache[device_id] = tile_device_id
-                                    # Also cache by BLE device ID for lookup
-                                    self._tile_auth_cache[tile_device_id] = auth_key
-                                    self._tile_ble_id_cache[tile_device_id] = tile_device_id
-                                except Exception:
-                                    _LOGGER.debug("Failed to decode auth key for %s", device_id)
-                        # =========================================================================
-
-                        _LOGGER.info(
-                            "✓ Cached metadata for %d devices: %s",
-                            len(self._device_name_cache),
-                            {k: v for k, v in list(self._device_name_cache.items())[:10]},
-                        )
-                        return True
-                    elif resp.status == 401 or resp.status == 403:
-                        # Device ID authentication failed - likely token expiration
-                        resp_text = await resp.text()
-                        _LOGGER.warning(
-                            "⚠️  Device ID authentication failed (HTTP %s)",
-                            resp.status
-                        )
-                        _LOGGER.info(
-                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        )
-                        _LOGGER.info("📝 DEVICE NAMING LIMITATION")
-                        _LOGGER.info(
-                            "The /v6/devices endpoint requires device ID authentication, but "
-                            "the credentials are no longer valid (tokens typically expire after 24-48 hours)."
-                        )
-                        _LOGGER.info(
-                            "💡 Your Tile/Jiobit devices will appear with generic names like "
-                            "'Tile 12345678' or 'Jiobit abcdef12'."
-                        )
-                        _LOGGER.info(
-                            "💡 You can manually rename them in Home Assistant:"
-                        )
-                        _LOGGER.info("   1. Go to Settings → Devices & Services → Life360")
-                        _LOGGER.info("   2. Click on each device entity")
-                        _LOGGER.info("   3. Click the settings icon")
-                        _LOGGER.info("   4. Change the 'Name' field to whatever you want")
-                        _LOGGER.info(
-                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                        )
-                        # Return True to allow operation to continue with generic names
-                        return True
-                    elif resp.status == 404:
-                        # Feature not available for this account - not an error
-                        _LOGGER.info("Device metadata endpoint returned 404 - feature not available")
-                        _LOGGER.info(
-                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
-                        )
-                        return True
+                    # Set ce-source and user-agent to match device platform
+                    if registered_device_id.startswith("android"):
+                        ce_source = f"/ANDROID/14/HomeAssistant/{registered_device_id}"
+                        user_agent = "com.life360.android.safetymapd/KOKO/25.45.0 android/14"
+                    elif registered_device_id.startswith("ios"):
+                        ce_source = f"/IOS/17/HomeAssistant/{registered_device_id}"
+                        user_agent = "Life360/25.45.0 (iOS 17.0)"
                     else:
-                        resp_text = await resp.text()
-                        _LOGGER.warning(
-                            "⚠ Device metadata request failed: HTTP %s - %s",
-                            resp.status, resp_text[:200]
+                        ce_source = f"/HOMEASSISTANT/{DOMAIN}"
+                        user_agent = API_USER_AGENT
+
+                    headers = {
+                        "Authorization": f"Bearer {acct.authorization}",
+                        "Accept": "application/json",
+                        "User-Agent": user_agent,
+                        "ce-type": "com.life360.device.devices.v1",
+                        "ce-id": ce_id,
+                        "ce-specversion": "1.0",
+                        "ce-time": ce_time,
+                        "ce-source": ce_source,
+                        "x-device-id": registered_device_id,
+                    }
+
+                    session = self._acct_data[aid].session
+                    _LOGGER.info(
+                        "→ Fetching device metadata from %s with x-device-id=%s",
+                        url, registered_device_id
+                    )
+
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            _LOGGER.debug("Device metadata response: %s", data)
+                        else:
+                            # Direct API call also failed
+                            _LOGGER.warning(
+                                "Direct API call returned HTTP %s - Cloudflare blocking detected",
+                                resp.status
+                            )
+                            _LOGGER.info(
+                                "💡 Install curl_cffi to bypass Cloudflare: pip3 install curl_cffi"
+                            )
+                            return True  # Not a fatal error
+
+                # Process data if we got it from either method
+                if data:
+                    # Parse response - structure is data.items[]
+                    items = data.get("data", {}).get("items", []) if isinstance(data.get("data"), dict) else data.get("items", [])
+                    if not items and isinstance(data, list):
+                        items = data
+
+                    # =========================================================================
+                    # PATCH: Loop to handle new API keys for Tiles and Jiobits
+                    # =========================================================================
+                    _LOGGER.debug("Processing %d items from metadata response", len(items))
+                    for item in items:
+                        item_type = item.get("type", "device")
+
+                        # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
+                        if item_type == "profile":
+                            profile_data = item.get("data", {})
+                            # Try both camelCase (old) and snake_case (new)
+                            tracker_id = profile_data.get("trackerId") or profile_data.get("tracker_id") or ""
+                            name = profile_data.get("name", "")
+
+                            if tracker_id and name:
+                                self._device_name_cache[tracker_id] = name
+                                _LOGGER.debug(f"Mapped Profile: {name} -> {tracker_id}")
+                            continue
+
+                        # FIX 2: Handle Tiles/Devices with new keys
+                        # Try 'id', 'deviceId', 'device_id'
+                        device_id = (
+                            item.get("id") or
+                            item.get("deviceId") or
+                            item.get("device_id") or
+                            ""
                         )
-                        _LOGGER.info(
-                            "💡 Devices will use generic names. You can manually rename them in Home Assistant."
+
+                        if not device_id:
+                            continue
+
+                        # Try 'name', 'deviceName', 'device_name'
+                        name = (
+                            item.get("name") or
+                            item.get("deviceName") or
+                            item.get("device_name")
                         )
+
+                        if name:
+                            self._device_name_cache[device_id] = name
+                            _LOGGER.debug(f"Mapped Device: {name} -> {device_id}")
+
+                        # Handle Avatar
+                        avatar = item.get("avatar") or item.get("avatar_url")
+                        if avatar:
+                            self._device_avatar_cache[device_id] = avatar
+
+                        # Handle Category
+                        category = item.get("category")
+                        if category:
+                            self._device_category_cache[device_id] = category
+
+                        # Handle Auth Key (for BLE)
+                        type_data = item.get("typeData") or item.get("type_data") or {}
+                        tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
+                        auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
+
+                        if tile_device_id and auth_key_b64:
+                            try:
+                                auth_key = base64.b64decode(auth_key_b64)
+                                self._tile_auth_cache[device_id] = auth_key
+                                self._tile_ble_id_cache[device_id] = tile_device_id
+                                # Also cache by BLE device ID for lookup
+                                self._tile_auth_cache[tile_device_id] = auth_key
+                                self._tile_ble_id_cache[tile_device_id] = tile_device_id
+                            except Exception:
+                                _LOGGER.debug("Failed to decode auth key for %s", device_id)
+                    # =========================================================================
+
+                    _LOGGER.info(
+                        "✓ Cached metadata for %d devices: %s",
+                        len(self._device_name_cache),
+                        {k: v for k, v in list(self._device_name_cache.items())[:10]},
+                    )
+                    return True
+
             except Exception as err:
                 _LOGGER.error("✗ Error fetching device metadata: %s", err, exc_info=True)
 

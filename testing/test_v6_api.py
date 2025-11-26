@@ -2,7 +2,7 @@
 """Test script for Life360 v6/devices API - rapid iteration testing."""
 
 import asyncio
-import aiohttp
+import httpx
 import json
 import uuid
 from datetime import datetime, timezone
@@ -79,68 +79,72 @@ async def test_v6_api(
         else:
             print(f"    {k}: {v}")
 
+    print(f"HTTP/2: Enabled")
+    print(f"Cookies: Enabled\n")
+
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
+        # Use httpx with HTTP/2 and cookie support (matches mobile app)
+        async with httpx.AsyncClient(http2=True, cookies=httpx.Cookies(), timeout=30.0) as client:
+            response = await client.get(
                 V6_DEVICES_URL,
                 headers=headers,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                print(f"\n{'='*80}")
-                print(f"Response Status: {response.status} {response.reason}")
-                print(f"{'='*80}")
+                params=params
+            )
+            print(f"\n{'='*80}")
+            print(f"Response Status: {response.status_code} {response.reason_phrase}")
+            print(f"HTTP Version: {response.http_version}")
+            print(f"{'='*80}")
 
-                # Print response headers
-                print("\nResponse Headers:")
-                for k, v in response.headers.items():
-                    print(f"  {k}: {v}")
+            # Print response headers
+            print("\nResponse Headers:")
+            for k, v in response.headers.items():
+                print(f"  {k}: {v}")
 
-                # Get response body
-                response_text = await response.text()
+            # Get response body
+            response_text = response.text
 
-                print(f"\nResponse Body ({len(response_text)} bytes):")
-                print("-" * 80)
+            print(f"\nResponse Body ({len(response_text)} bytes):")
+            print("-" * 80)
 
-                # Try to parse as JSON
-                try:
-                    response_data = json.loads(response_text)
-                    print(json.dumps(response_data, indent=2))
+            # Try to parse as JSON
+            try:
+                response_data = json.loads(response_text)
+                print(json.dumps(response_data, indent=2))
 
-                    # Analyze the structure
-                    if response.status == 200:
-                        print("\n" + "="*80)
-                        print("SUCCESS! Analyzing response structure...")
-                        print("="*80)
+                # Analyze the structure
+                if response.status_code == 200:
+                    print("\n" + "="*80)
+                    print("SUCCESS! Analyzing response structure...")
+                    print("="*80)
 
-                        if "data" in response_data:
-                            data = response_data["data"]
-                            if "items" in data:
-                                items = data["items"]
-                                print(f"\n✓ Found {len(items)} devices")
+                    if "data" in response_data:
+                        data = response_data["data"]
+                        if "items" in data:
+                            items = data["items"]
+                            print(f"\n✓ Found {len(items)} devices")
 
-                                for i, item in enumerate(items):
-                                    print(f"\nDevice {i+1}:")
-                                    print(f"  id: {item.get('id')}")
-                                    print(f"  name: {item.get('name')}")
-                                    print(f"  provider: {item.get('provider')}")
+                            for i, item in enumerate(items):
+                                print(f"\nDevice {i+1}:")
+                                print(f"  id: {item.get('id')}")
+                                print(f"  name: {item.get('name')}")
+                                print(f"  provider: {item.get('provider')}")
 
-                                    type_data = item.get('typeData', {})
-                                    if type_data:
-                                        print(f"  Tile BLE ID: {type_data.get('deviceId')}")
-                                        print(f"  Auth Key: {type_data.get('authKey')}")
-                            else:
-                                print("\n✗ No 'items' key in data")
+                                type_data = item.get('typeData', {})
+                                if type_data:
+                                    print(f"  Tile BLE ID: {type_data.get('deviceId')}")
+                                    print(f"  Auth Key: {type_data.get('authKey')}")
                         else:
-                            print("\n✗ No 'data' key in response")
+                            print("\n✗ No 'items' key in data")
+                    else:
+                        print("\n✗ No 'data' key in response")
 
-                except json.JSONDecodeError:
-                    print(response_text)
-                    print("\n✗ Response is not valid JSON")
+            except json.JSONDecodeError:
+                print(response_text)
+                print("\n✗ Response is not valid JSON")
 
-                return response.status, response_data if response.status == 200 else None
+            return response.status_code, response_data if response.status_code == 200 else None
 
-    except aiohttp.ClientError as e:
+    except httpx.HTTPError as e:
         print(f"\n✗ HTTP Error: {e}")
         return None, None
     except Exception as e:

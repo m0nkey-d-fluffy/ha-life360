@@ -62,12 +62,14 @@ DEVICE_ID = "YOUR_DEVICE_ID_HERE"  # Replace with your actual device ID (optiona
 ### Step 3: Run Tests
 
 ```bash
-# Install dependencies
-pip3 install aiohttp
+# Install dependencies (httpx with HTTP/2 support to match mobile app)
+pip3 install "httpx[http2]"
 
 # Run the test
-python3 test_v6_api.py
+python3 test_v6_configured.py
 ```
+
+The scripts use **httpx with HTTP/2 enabled** and **cookie handling** to match the mobile app exactly.
 
 ## What the Test Does
 

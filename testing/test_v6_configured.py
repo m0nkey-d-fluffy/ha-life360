@@ -2,7 +2,7 @@
 """Pre-configured test for Life360 v6/devices API using known credentials."""
 
 import asyncio
-import aiohttp
+import httpx
 import json
 import uuid
 from datetime import datetime, timezone
@@ -51,58 +51,61 @@ async def test_v6_with_device_id():
     print(f"\nRequest: GET {V6_URL}")
     print(f"x-device-id: {DEVICE_ID}")
     print(f"Bearer: {BEARER_TOKEN[:30]}...")
+    print(f"HTTP/2: Enabled")
+    print(f"Cookies: Enabled")
 
-    async with aiohttp.ClientSession() as session:
+    # Use httpx with HTTP/2 and cookie support (matches mobile app)
+    async with httpx.AsyncClient(http2=True, cookies=httpx.Cookies()) as client:
         try:
-            async with session.get(V6_URL, headers=headers, params=params) as resp:
+            resp = await client.get(V6_URL, headers=headers, params=params)
+            print(f"\n{'='*80}")
+            print(f"Response: {resp.status_code} {resp.reason_phrase}")
+            print(f"HTTP Version: {resp.http_version}")
+            print(f"{'='*80}")
+
+            body = resp.text
+
+            if resp.status_code == 200:
+                data = json.loads(body)
+                print("\n✅ SUCCESS!\n")
+                print(json.dumps(data, indent=2))
+
+                # Analyze devices
+                items = data.get("data", {}).get("items", [])
                 print(f"\n{'='*80}")
-                print(f"Response: {resp.status} {resp.reason}")
+                print(f"Found {len(items)} devices:")
                 print(f"{'='*80}")
 
-                body = await resp.text()
+                for item in items:
+                    life360_id = item.get("id")
+                    name = item.get("name")
+                    provider = item.get("provider")
+                    type_data = item.get("typeData", {})
+                    tile_ble_id = type_data.get("deviceId")
+                    auth_key = type_data.get("authKey")
 
-                if resp.status == 200:
-                    data = json.loads(body)
-                    print("\n✅ SUCCESS!\n")
-                    print(json.dumps(data, indent=2))
+                    print(f"\nDevice: {name}")
+                    print(f"  Life360 ID: {life360_id}")
+                    print(f"  Provider: {provider}")
+                    if tile_ble_id:
+                        print(f"  Tile BLE ID: {tile_ble_id}")
+                        print(f"  Auth Key: {auth_key}")
 
-                    # Analyze devices
-                    items = data.get("data", {}).get("items", [])
-                    print(f"\n{'='*80}")
-                    print(f"Found {len(items)} devices:")
-                    print(f"{'='*80}")
+                return True
 
-                    for item in items:
-                        life360_id = item.get("id")
-                        name = item.get("name")
-                        provider = item.get("provider")
-                        type_data = item.get("typeData", {})
-                        tile_ble_id = type_data.get("deviceId")
-                        auth_key = type_data.get("authKey")
-
-                        print(f"\nDevice: {name}")
-                        print(f"  Life360 ID: {life360_id}")
-                        print(f"  Provider: {provider}")
-                        if tile_ble_id:
-                            print(f"  Tile BLE ID: {tile_ble_id}")
-                            print(f"  Auth Key: {auth_key}")
-
-                    return True
-
-                elif resp.status == 401:
-                    print("\n❌ 401 Unauthorized")
-                    print("\nPossible reasons:")
-                    print("  - Bearer token is expired")
-                    print("  - x-device-id is incorrect")
-                    print("\nTo fix:")
-                    print("  1. Restart Life360 integration in Home Assistant")
-                    print("  2. Check logs for new Bearer token")
-                    print("  3. Update BEARER_TOKEN in this script")
-                    return False
-                else:
-                    print(f"\n❌ Unexpected status: {resp.status}")
-                    print(f"\nResponse body:\n{body}")
-                    return False
+            elif resp.status_code == 401:
+                print("\n❌ 401 Unauthorized")
+                print("\nPossible reasons:")
+                print("  - Bearer token is expired")
+                print("  - x-device-id is incorrect")
+                print("\nTo fix:")
+                print("  1. Get fresh Bearer token from HA logs")
+                print("  2. Update BEARER_TOKEN in this script")
+                return False
+            else:
+                print(f"\n❌ Unexpected status: {resp.status_code}")
+                print(f"\nResponse body:\n{body}")
+                return False
 
         except Exception as e:
             print(f"\n❌ Error: {e}")
@@ -144,33 +147,36 @@ async def test_v6_without_device_id():
     print(f"\nRequest: GET {V6_URL}")
     print(f"x-device-id: (not sent)")
     print(f"Bearer: {BEARER_TOKEN[:30]}...")
+    print(f"HTTP/2: Enabled")
+    print(f"Cookies: Enabled")
 
-    async with aiohttp.ClientSession() as session:
+    async with httpx.AsyncClient(http2=True, cookies=httpx.Cookies()) as client:
         try:
-            async with session.get(V6_URL, headers=headers, params=params) as resp:
-                print(f"\n{'='*80}")
-                print(f"Response: {resp.status} {resp.reason}")
-                print(f"{'='*80}")
+            resp = await client.get(V6_URL, headers=headers, params=params)
+            print(f"\n{'='*80}")
+            print(f"Response: {resp.status_code} {resp.reason_phrase}")
+            print(f"HTTP Version: {resp.http_version}")
+            print(f"{'='*80}")
 
-                body = await resp.text()
+            body = resp.text
 
-                if resp.status == 200:
-                    data = json.loads(body)
-                    print("\n🎉 AMAZING! The API works WITHOUT x-device-id!\n")
-                    print(json.dumps(data, indent=2))
+            if resp.status_code == 200:
+                data = json.loads(body)
+                print("\n🎉 AMAZING! The API works WITHOUT x-device-id!\n")
+                print(json.dumps(data, indent=2))
 
-                    items = data.get("data", {}).get("items", [])
-                    print(f"\nFound {len(items)} devices")
-                    return True
+                items = data.get("data", {}).get("items", [])
+                print(f"\nFound {len(items)} devices")
+                return True
 
-                elif resp.status == 401:
-                    print("\n⚠️  401 Unauthorized without x-device-id")
-                    print("\nThis is expected - the API requires x-device-id")
-                    return False
-                else:
-                    print(f"\n❌ Unexpected status: {resp.status}")
-                    print(f"\nResponse body:\n{body}")
-                    return False
+            elif resp.status_code == 401:
+                print("\n⚠️  401 Unauthorized without x-device-id")
+                print("\nThis is expected - the API requires x-device-id")
+                return False
+            else:
+                print(f"\n❌ Unexpected status: {resp.status_code}")
+                print(f"\nResponse body:\n{body}")
+                return False
 
         except Exception as e:
             print(f"\n❌ Error: {e}")

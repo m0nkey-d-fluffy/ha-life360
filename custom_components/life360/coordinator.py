@@ -534,6 +534,28 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                         ""
                                     )
 
+                                    # Try to extract and cache Tile BLE auth data from locations response
+                                    # This allows BLE ringing without needing /v6/devices endpoint
+                                    if device_id and type_data:
+                                        tile_device_id = type_data.get("deviceId") or type_data.get("device_id")
+                                        auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key")
+
+                                        if tile_device_id and auth_key_b64:
+                                            try:
+                                                import base64
+                                                auth_key = base64.b64decode(auth_key_b64)
+                                                self._tile_auth_cache[device_id] = auth_key
+                                                self._tile_ble_id_cache[device_id] = tile_device_id
+                                                # Also cache by BLE device ID
+                                                self._tile_auth_cache[tile_device_id] = auth_key
+                                                self._tile_ble_id_cache[tile_device_id] = tile_device_id
+                                                _LOGGER.info(
+                                                    "✓ Cached Tile BLE auth data from locations: device_id=%s, ble_id=%s",
+                                                    device_id, tile_device_id
+                                                )
+                                            except Exception as err:
+                                                _LOGGER.debug("Failed to decode Tile auth key from locations: %s", err)
+
                                     # Inject cached metadata (name, avatar, category)
                                     # The locations endpoint doesn't return names
                                     if device_id and device_id in self._device_name_cache:

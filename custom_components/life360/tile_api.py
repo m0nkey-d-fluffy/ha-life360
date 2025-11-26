@@ -52,22 +52,27 @@ class TileAPIClient:
         self.session_token: str | None = None
         self.user_uuid: str | None = None
 
-    def _get_headers(self, include_session: bool = False) -> dict[str, str]:
+    def _get_headers(self, include_session: bool = False, include_content_type: bool = False) -> dict[str, str]:
         """Get API request headers.
 
         Args:
             include_session: Whether to include session token
+            include_content_type: Whether to include Content-Type header
 
         Returns:
             Headers dict
         """
         headers = {
             "User-Agent": f"Tile/{TILE_APP_VERSION}",
+            "Accept": "application/json",
             "tile_api_version": TILE_API_VERSION,
             "tile_app_id": TILE_APP_ID,
             "tile_app_version": TILE_APP_VERSION,
             "tile_client_uuid": self.client_uuid,
         }
+
+        if include_content_type:
+            headers["Content-Type"] = "application/json"
 
         if include_session and self.session_token:
             headers["tile_session_id"] = self.session_token
@@ -96,7 +101,7 @@ class TileAPIClient:
 
             async with self.session.put(
                 client_url,
-                headers=self._get_headers(),
+                headers=self._get_headers(include_content_type=True),
                 json=client_data,
             ) as resp:
                 if resp.status not in (200, 201):
@@ -117,7 +122,7 @@ class TileAPIClient:
 
             async with self.session.post(
                 session_url,
-                headers=self._get_headers(),
+                headers=self._get_headers(include_content_type=True),
                 json=session_data,
             ) as resp:
                 if resp.status not in (200, 201):

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Pre-configured test for Life360 v6/devices API using known credentials."""
+"""Pre-configured test for Life360 v6/devices API using known credentials.
+
+Uses curl_cffi to impersonate Android Chrome for better TLS fingerprinting
+and establishes a session by calling other API endpoints first.
+"""
 
 import asyncio
-import httpx
+from curl_cffi.requests import AsyncSession
 import json
 import uuid
 from datetime import datetime, timezone
@@ -10,10 +14,81 @@ from datetime import datetime, timezone
 # ⚠️ CONFIGURE YOUR CREDENTIALS HERE ⚠️
 # Get these from Home Assistant logs or captured network flows
 BEARER_TOKEN = "YOUR_BEARER_TOKEN_HERE"  # From HA logs: "Authorization: Bearer ..."
-DEVICE_ID = "YOUR_DEVICE_ID_HERE"  # From flows: x-device-id header (optional)
+DEVICE_ID = "YOUR_DEVICE_ID_HERE"  # From flows: x-device-id header
+CIRCLE_ID = "YOUR_CIRCLE_ID_HERE"  # From HA config or /v3/circles endpoint
 
-# API endpoint
-V6_URL = "https://api-cloudfront.life360.com/v6/devices"
+# API endpoints
+API_BASE = "https://api-cloudfront.life360.com"
+V6_DEVICES_URL = f"{API_BASE}/v6/devices"
+
+
+async def establish_session(session, bearer_token, device_id, circle_id):
+    """
+    Establish a session by calling other Life360 API endpoints first.
+
+    This mimics the mobile app behavior of making several API calls before
+    accessing v6/devices, which helps establish session cookies and avoid
+    Cloudflare blocks.
+    """
+    print("\n" + "="*80)
+    print("ESTABLISHING SESSION (mimicking mobile app behavior)")
+    print("="*80)
+
+    # Common headers for all requests
+    def get_headers(ce_type):
+        ce_id = str(uuid.uuid4())
+        ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        return {
+            "Accept": "application/json",
+            "Accept-Language": "en_AU",
+            "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
+            "Authorization": f"Bearer {bearer_token}",
+            "x-device-id": device_id,
+            "ce-specversion": "1.0",
+            "ce-type": ce_type,
+            "ce-id": ce_id,
+            "ce-time": ce_time,
+            "ce-source": f"/ANDROID/12/samsung-SM-N920I/{device_id}",
+            "Accept-Encoding": "gzip",
+        }
+
+    # Step 1: Call /v4/circles/{id}/members (common first call)
+    print("\n1. Calling /v4/circles/{id}/members...")
+    try:
+        members_url = f"{API_BASE}/v4/circles/{circle_id}/members"
+        resp = await session.get(
+            members_url,
+            headers=get_headers("com.life360.circle.members.v1")
+        )
+        print(f"   Response: {resp.status_code} ({len(resp.text)} bytes)")
+        if resp.status_code == 200:
+            print(f"   ✓ Session cookie received")
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+
+    await asyncio.sleep(0.5)  # Small delay like real app
+
+    # Step 2: Call /v5/circles/devices/locations (gets device locations)
+    print("\n2. Calling /v5/circles/devices/locations...")
+    try:
+        locations_url = f"{API_BASE}/v5/circles/devices/locations"
+        resp = await session.get(
+            locations_url,
+            headers=get_headers("com.life360.cloud.platform.devices.locations.v1"),
+            params={"circleId": circle_id}
+        )
+        print(f"   Response: {resp.status_code} ({len(resp.text)} bytes)")
+        if resp.status_code == 200:
+            print(f"   ✓ Additional cookies received")
+    except Exception as e:
+        print(f"   ✗ Error: {e}")
+
+    await asyncio.sleep(0.5)
+
+    print("\n✓ Session established with cookies from previous requests")
+    print(f"  Cookies in session: {len(session.cookies)} cookies")
+
 
 async def test_v6_with_device_id():
     """Test WITH x-device-id header."""
@@ -48,19 +123,27 @@ async def test_v6_with_device_id():
 
     params = {"activationStates": "activated,pending,pending_disassociated"}
 
-    print(f"\nRequest: GET {V6_URL}")
+    print(f"\nRequest: GET {V6_DEVICES_URL}")
     print(f"x-device-id: {DEVICE_ID}")
     print(f"Bearer: {BEARER_TOKEN[:30]}...")
+    print(f"TLS Fingerprint: Android Chrome (curl-impersonate)")
     print(f"HTTP/2: Enabled")
     print(f"Cookies: Enabled")
 
-    # Use httpx with HTTP/2 and cookie support (matches mobile app)
-    async with httpx.AsyncClient(http2=True, cookies=httpx.Cookies()) as client:
+    # Use curl_cffi with Android Chrome impersonation (best TLS fingerprint match)
+    async with AsyncSession(impersonate="chrome110") as session:
+        # First establish session like mobile app does
+        await establish_session(session, BEARER_TOKEN, DEVICE_ID, CIRCLE_ID)
+
+        print("\n" + "="*80)
+        print("NOW CALLING v6/devices WITH ESTABLISHED SESSION")
+        print("="*80)
+
         try:
-            resp = await client.get(V6_URL, headers=headers, params=params)
+            resp = await session.get(V6_DEVICES_URL, headers=headers, params=params)
             print(f"\n{'='*80}")
-            print(f"Response: {resp.status_code} {resp.reason_phrase}")
-            print(f"HTTP Version: {resp.http_version}")
+            print(f"Response: {resp.status_code}")
+            print(f"HTTP Version: HTTP/2")
             print(f"{'='*80}")
 
             body = resp.text
@@ -144,18 +227,19 @@ async def test_v6_without_device_id():
 
     params = {"activationStates": "activated,pending,pending_disassociated"}
 
-    print(f"\nRequest: GET {V6_URL}")
+    print(f"\nRequest: GET {V6_DEVICES_URL}")
     print(f"x-device-id: (not sent)")
     print(f"Bearer: {BEARER_TOKEN[:30]}...")
+    print(f"TLS Fingerprint: Android Chrome (curl-impersonate)")
     print(f"HTTP/2: Enabled")
     print(f"Cookies: Enabled")
 
-    async with httpx.AsyncClient(http2=True, cookies=httpx.Cookies()) as client:
+    async with AsyncSession(impersonate="chrome110") as session:
         try:
-            resp = await client.get(V6_URL, headers=headers, params=params)
+            resp = await session.get(V6_DEVICES_URL, headers=headers, params=params)
             print(f"\n{'='*80}")
-            print(f"Response: {resp.status_code} {resp.reason_phrase}")
-            print(f"HTTP Version: {resp.http_version}")
+            print(f"Response: {resp.status_code}")
+            print(f"HTTP Version: HTTP/2")
             print(f"{'='*80}")
 
             body = resp.text

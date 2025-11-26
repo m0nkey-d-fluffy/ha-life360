@@ -52,24 +52,36 @@ If extraction doesn't work, manually configure credentials:
 
 ### Step 2: Configure the Test Script
 
-Edit `test_v6_configured.py` and update these lines:
+Both test scripts need the same configuration:
+
+Edit `test_v6_configured.py` or `test_v6_api.py` and update these lines:
 
 ```python
-BEARER_TOKEN = "YOUR_BEARER_TOKEN_HERE"  # Replace with your actual token
-DEVICE_ID = "YOUR_DEVICE_ID_HERE"  # Replace with your actual device ID (optional)
+BEARER_TOKEN = "YOUR_BEARER_TOKEN_HERE"  # From HA logs
+DEVICE_ID = "YOUR_DEVICE_ID_HERE"  # From network capture
+CIRCLE_ID = "YOUR_CIRCLE_ID_HERE"  # From HA configuration.yaml
 ```
+
+**To find your CIRCLE_ID:**
+- Check your Home Assistant `configuration.yaml` under `life360:` section
+- Or look in HA logs for `life360` and find the circle UUID (format: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
+- Or run `curl` with your bearer token to `https://api-cloudfront.life360.com/v3/circles` to list your circles
 
 ### Step 3: Run Tests
 
 ```bash
-# Install dependencies (httpx with HTTP/2 support to match mobile app)
-pip3 install "httpx[http2]"
+# Install dependencies (curl_cffi for Android Chrome TLS impersonation)
+pip3 install curl_cffi
 
 # Run the test
 python3 test_v6_configured.py
 ```
 
-The scripts use **httpx with HTTP/2 enabled** and **cookie handling** to match the mobile app exactly.
+**What the scripts now do:**
+- ✅ **TLS Fingerprinting**: Uses `curl_cffi` to impersonate Android Chrome (bypasses Cloudflare fingerprint detection)
+- ✅ **Session Establishment**: Calls other Life360 API endpoints first to build session cookies (mimics mobile app behavior)
+- ✅ **HTTP/2**: Native HTTP/2 support matching mobile app
+- ✅ **Cookie Handling**: Persistent cookies across requests like mobile app
 
 ## What the Test Does
 

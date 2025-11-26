@@ -1745,6 +1745,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             "⚠️  Device ID authentication failed (HTTP %s)",
                             resp.status
                         )
+                        _LOGGER.debug(
+                            "v6/devices 401/403 response body: %s", resp_text
+                        )
+                        _LOGGER.debug(
+                            "v6/devices request headers: x-device-id=%s, ce-source=%s, user-agent=%s",
+                            registered_device_id or "none",
+                            headers.get("ce-source", "unknown"),
+                            headers.get("User-Agent", "unknown")
+                        )
                         _LOGGER.info(
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         )

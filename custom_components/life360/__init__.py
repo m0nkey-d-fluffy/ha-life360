@@ -387,26 +387,25 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         else:
             provider = "jiobit"  # default
 
-        # Find circle_id by searching through all coordinators
+        # Find circle_id from coordinators
+        # Devices are shared across circles, so we just need ANY valid circle
         entries = hass.config_entries.async_entries(DOMAIN)
         for entry in entries:
             if not hasattr(entry, "runtime_data") or not entry.runtime_data:
                 continue
 
-            # Check device coordinator data
-            device_coord = entry.runtime_data.device_coordinator
-            if device_coord and device_coord.data:
-                if device_id in device_coord.data:
-                    # Found the device! Now find which circle it belongs to
-                    # Get all circles from the main coordinator
-                    main_coord = entry.runtime_data.coordinator
-                    if main_coord and main_coord.data and main_coord.data.circles:
-                        # For now, return the first circle
-                        # Devices typically belong to one circle
-                        for circle_id in main_coord.data.circles.keys():
-                            return device_id, str(circle_id), provider
+            # Get the main coordinator which has circle data
+            main_coord = entry.runtime_data.coordinator
+            if main_coord and main_coord.data and main_coord.data.circles:
+                # Return the first circle - devices work with any circle they're in
+                for circle_id in main_coord.data.circles.keys():
+                    _LOGGER.debug(
+                        "Found circle %s for device %s (provider: %s)",
+                        circle_id, device_id, provider
+                    )
+                    return device_id, str(circle_id), provider
 
-        _LOGGER.warning("Could not find circle_id for device %s", device_id)
+        _LOGGER.error("Could not find any circles for device %s", device_id)
         return device_id, None, provider
 
     _BUZZ_JIOBIT_SCHEMA = vol.Schema({

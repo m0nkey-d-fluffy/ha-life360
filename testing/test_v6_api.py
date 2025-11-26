@@ -75,7 +75,8 @@ async def test_v6_api(
     print(f"  Headers:")
     for k, v in headers.items():
         if k == "Authorization":
-            print(f"    {k}: Bearer {v[:20]}...")
+            # v already contains "Bearer {token}", just truncate the token part
+            print(f"    {k}: {v[:27]}...")  # "Bearer " + first 20 chars of token
         else:
             print(f"    {k}: {v}")
 

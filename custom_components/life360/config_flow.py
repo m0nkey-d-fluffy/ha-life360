@@ -51,6 +51,8 @@ from .const import (
     CONF_DRIVING_SPEED,
     CONF_MAX_GPS_ACCURACY,
     CONF_SHOW_DRIVING,
+    CONF_TILE_EMAIL,
+    CONF_TILE_PASSWORD,
     CONF_TOKEN_TYPE,
     CONF_VERBOSITY,
     DOMAIN,
@@ -125,6 +127,10 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
             self._opts.driving = cast(bool, user_input[CONF_SHOW_DRIVING])
             device_id = cast(str | None, user_input.get(CONF_DEVICE_ID))
             self._opts.device_id = device_id.strip() if device_id else None
+            tile_email = cast(str | None, user_input.get(CONF_TILE_EMAIL))
+            self._opts.tile_email = tile_email.strip() if tile_email else None
+            tile_password = cast(str | None, user_input.get(CONF_TILE_PASSWORD))
+            self._opts.tile_password = tile_password.strip() if tile_password else None
             if self.show_advanced_options:
                 self._opts.verbosity = int(user_input[CONF_VERBOSITY])
 
@@ -152,6 +158,12 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
                 vol.Optional(CONF_DEVICE_ID): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.TEXT)
                 ),
+                vol.Optional(CONF_TILE_EMAIL): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.EMAIL)
+                ),
+                vol.Optional(CONF_TILE_PASSWORD): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
             }
         )
         if self._opts.max_gps_accuracy is not None:
@@ -168,6 +180,14 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
         if self._opts.device_id:
             data_schema = self.add_suggested_values_to_schema(
                 data_schema, {CONF_DEVICE_ID: self._opts.device_id}
+            )
+        if self._opts.tile_email:
+            data_schema = self.add_suggested_values_to_schema(
+                data_schema, {CONF_TILE_EMAIL: self._opts.tile_email}
+            )
+        if self._opts.tile_password:
+            data_schema = self.add_suggested_values_to_schema(
+                data_schema, {CONF_TILE_PASSWORD: self._opts.tile_password}
             )
         if self.show_advanced_options:
             data_schema = data_schema.extend(

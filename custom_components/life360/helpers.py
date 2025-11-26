@@ -24,6 +24,8 @@ from .const import (
     CONF_DRIVING_SPEED,
     CONF_MAX_GPS_ACCURACY,
     CONF_SHOW_DRIVING,
+    CONF_TILE_EMAIL,
+    CONF_TILE_PASSWORD,
     CONF_VERBOSITY,
     DOMAIN,
     SPEED_DIGITS,
@@ -68,6 +70,8 @@ class ConfigOptions:
     max_gps_accuracy: int | None = None
     verbosity: int = 0
     device_id: str | None = None
+    tile_email: str | None = None
+    tile_password: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a dict representation of the data."""
@@ -87,6 +91,8 @@ class ConfigOptions:
             data[CONF_MAX_GPS_ACCURACY],
             data[CONF_VERBOSITY],
             data.get(CONF_DEVICE_ID),
+            data.get(CONF_TILE_EMAIL),
+            data.get(CONF_TILE_PASSWORD),
         )
 
 

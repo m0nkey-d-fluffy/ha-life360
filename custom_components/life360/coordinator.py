@@ -190,13 +190,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 tile_name = tile_info.get("name", f"Tile {tile_id[:8]}")
 
                 if auth_key_str:
-                    # Tile API returns auth_key as hex string, convert to bytes
+                    # Tile API returns auth_key as base64 string, convert to bytes
                     try:
-                        # Try hex decoding first (most common format)
+                        import base64
                         if isinstance(auth_key_str, str):
-                            # Remove any spaces or hyphens
-                            auth_key_str = auth_key_str.replace(" ", "").replace("-", "")
-                            auth_key = bytes.fromhex(auth_key_str)
+                            # Decode base64 to bytes
+                            auth_key = base64.b64decode(auth_key_str)
                         else:
                             # Already bytes
                             auth_key = auth_key_str
@@ -1582,6 +1581,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if metadata was fetched successfully
         """
+        # Skip v6 API calls if no device_id is configured
+        # We now get Tile names directly from Tile API, so v6 is only needed for Jiobit
+        if not self._options.device_id:
+            _LOGGER.debug("Skipping /v6/devices API call - no device_id configured")
+            return False
+
         circle_data = self.data.circles.get(cid)
         if not circle_data:
             return False

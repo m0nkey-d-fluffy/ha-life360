@@ -39,6 +39,8 @@ CONF_DEVICE_ID = "device_id"
 CONF_DRIVING_SPEED = "driving_speed"
 CONF_MAX_GPS_ACCURACY = "max_gps_accuracy"
 CONF_SHOW_DRIVING = "driving"
+CONF_TILE_EMAIL = "tile_email"
+CONF_TILE_PASSWORD = "tile_password"
 CONF_TOKEN_TYPE = "token_type"
 CONF_VERBOSITY = "verbosity"
 

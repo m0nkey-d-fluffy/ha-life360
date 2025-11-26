@@ -686,6 +686,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: L360ConfigEntry) -> bool
 
     coordinator = CirclesMembersDataUpdateCoordinator(hass, store)
     await coordinator.async_config_entry_first_refresh()
+
+    # Fetch Tile BLE auth keys if Tile credentials are configured
+    # This populates the auth cache used for BLE ringing
+    await coordinator.fetch_tile_auth_keys()
+
     mem_coordinator: dict[MemberID, MemberDataUpdateCoordinator] = {}
 
     async def async_process_data(forward: bool = False) -> None:

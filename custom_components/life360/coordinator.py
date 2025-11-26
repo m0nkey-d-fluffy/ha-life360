@@ -28,6 +28,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import helpers
+from . import tile_api
 from .const import (
     API_BASE_URL,
     API_USER_AGENT,
@@ -142,6 +143,105 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         if aid not in self._acct_data:
             return True
         return self._acct_data[aid].online
+
+    async def fetch_tile_auth_keys(self) -> None:
+        """Authenticate to Tile API and fetch BLE auth keys for all Tile devices.
+
+        This is called during coordinator setup to populate the Tile auth cache.
+        The cache is used for BLE ringing functionality.
+        """
+        # Check if Tile credentials are configured
+        if not self._options.tile_email or not self._options.tile_password:
+            _LOGGER.debug("No Tile credentials configured - skipping Tile BLE auth fetch")
+            return
+
+        _LOGGER.info("Authenticating to Tile API to fetch BLE auth keys...")
+
+        try:
+            # Create a session for Tile API
+            # Reuse one of the Life360 account sessions if available
+            session = None
+            for acct_data in self._acct_data.values():
+                session = acct_data.session
+                break
+
+            if not session:
+                # No Life360 sessions available, create a new one
+                session = async_create_clientsession(self.hass, timeout=COMM_TIMEOUT)
+
+            # Authenticate and fetch devices
+            client = await tile_api.async_login(
+                self._options.tile_email,
+                self._options.tile_password,
+                session,
+            )
+
+            # Get all Tile devices with their auth keys
+            tiles = await client.get_tiles()
+
+            if not tiles:
+                _LOGGER.warning("No Tiles found in Tile account")
+                return
+
+            # Populate the auth cache
+            for tile_id, tile_info in tiles.items():
+                auth_key_str = tile_info.get("auth_key")
+                tile_uuid = tile_info.get("tile_uuid")
+                tile_name = tile_info.get("name", f"Tile {tile_id[:8]}")
+
+                if auth_key_str:
+                    # Tile API returns auth_key as hex string, convert to bytes
+                    try:
+                        # Try hex decoding first (most common format)
+                        if isinstance(auth_key_str, str):
+                            # Remove any spaces or hyphens
+                            auth_key_str = auth_key_str.replace(" ", "").replace("-", "")
+                            auth_key = bytes.fromhex(auth_key_str)
+                        else:
+                            # Already bytes
+                            auth_key = auth_key_str
+
+                        # Cache by tile_id
+                        self._tile_auth_cache[tile_id] = auth_key
+
+                        # Also cache by tile_uuid if available
+                        if tile_uuid:
+                            self._tile_auth_cache[tile_uuid] = auth_key
+                            self._tile_ble_id_cache[tile_uuid] = tile_id
+
+                        # Cache the BLE device ID
+                        self._tile_ble_id_cache[tile_id] = tile_id
+
+                        _LOGGER.info(
+                            "✅ Cached Tile BLE auth key: %s (id=%s, %d bytes)",
+                            tile_name,
+                            tile_id[:8],
+                            len(auth_key),
+                        )
+                    except (ValueError, AttributeError) as err:
+                        _LOGGER.error(
+                            "Failed to decode Tile auth key for %s: %s",
+                            tile_name,
+                            err,
+                        )
+                else:
+                    _LOGGER.warning(
+                        "No auth key found for Tile: %s (id=%s)",
+                        tile_name,
+                        tile_id[:8],
+                    )
+
+            _LOGGER.info("✅ Successfully cached %d Tile BLE auth keys", len(tiles))
+
+        except tile_api.TileAuthenticationError as err:
+            _LOGGER.error("Tile API authentication failed: %s", err)
+            _LOGGER.error("Please check your Tile email and password in the integration configuration")
+        except tile_api.TileAPIError as err:
+            _LOGGER.error("Tile API error: %s", err)
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.error("Unexpected error fetching Tile auth keys: %s", err)
+            if self._options.verbosity >= 3:
+                _LOGGER.exception("Full traceback:")
 
     # Once supporting only HA 2024.5 or newer, change to @cached_property and clear
     # cache (i.e., if hasattr(self, "mem_circles"): delattr(self, "mem_circles"))
@@ -2039,6 +2139,14 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             del self.data.mem_details[mid]
 
         await self.async_refresh()
+
+        # Re-fetch Tile auth keys if Tile credentials changed
+        if (
+            old_options.tile_email != new_options.tile_email
+            or old_options.tile_password != new_options.tile_password
+        ):
+            _LOGGER.info("Tile credentials changed - re-fetching BLE auth keys")
+            await self.fetch_tile_auth_keys()
 
         # Allow client requests to proceed.
         self._client_request_ok.set()

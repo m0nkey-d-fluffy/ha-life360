@@ -4,6 +4,8 @@
 import asyncio
 import aiohttp
 import json
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 # Configuration - UPDATE THESE
@@ -32,22 +34,37 @@ async def test_v6_api(
     print("Testing v6/devices API")
     print("="*80)
 
-    # Build headers
+    # Generate dynamic CloudEvents headers (REQUIRED by v6 API!)
+    ce_id = str(uuid.uuid4())
+    ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    # Build headers matching mobile app exactly
     headers = {
         "Accept": "application/json",
         "Accept-Language": "en_AU",
         "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
         "Authorization": f"Bearer {bearer_token}",
+        # CloudEvents headers - REQUIRED
         "ce-specversion": "1.0",
         "ce-type": "com.life360.device.devices.v1",
+        "ce-id": ce_id,
+        "ce-time": ce_time,
         "Accept-Encoding": "gzip",
     }
 
     if device_id:
         headers["x-device-id"] = device_id
+        # Add ce-source when we have device_id (matches mobile app format)
+        headers["ce-source"] = f"/ANDROID/12/samsung-SM-N920I/{device_id}"
         print(f"✓ Using x-device-id: {device_id}")
+        print(f"✓ Using ce-source: {headers['ce-source']}")
     else:
         print("✗ No x-device-id header")
+        print("✗ No ce-source header (requires device_id)")
+
+    print(f"\nCloudEvents Headers:")
+    print(f"  ce-id: {ce_id}")
+    print(f"  ce-time: {ce_time}")
 
     # Build URL with query params
     params = {"activationStates": activation_states}

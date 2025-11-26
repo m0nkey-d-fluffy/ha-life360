@@ -9,9 +9,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 # Configuration - UPDATE THESE
-LIFE360_USERNAME = "your_username_here"
-LIFE360_PASSWORD = "your_password_here"
-BEARER_TOKEN = "your_bearer_token_here"  # From HA logs or auth
+# Note: Life360 v6 API uses bearer token authentication only (no username/password needed)
+BEARER_TOKEN = "your_bearer_token_here"  # Get from HA logs or network capture
 DEVICE_ID = ""  # Optional: x-device-id header from network capture
 
 # API endpoint

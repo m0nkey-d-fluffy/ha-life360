@@ -16,9 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Tile API constants
 TILE_API_BASE = "https://production.tile-api.com/api/v1"
-TILE_APP_ID = "ios-tile-production"
-TILE_APP_VERSION = "2.131.1"
-TILE_API_VERSION = "1.0"
+TILE_APP_ID = "android-tile-production"
+TILE_APP_VERSION = "2.109.0.4485"
+TILE_CLIENT_UUID = "26726553-703b-3998-9f0e-c5f256caaf6d"  # Fixed UUID from node-tile
 
 
 class TileAPIError(Exception):
@@ -48,31 +48,34 @@ class TileAPIClient:
         self.email = email
         self.password = password
         self.session = session
-        self.client_uuid = str(uuid.uuid4())
-        self.session_token: str | None = None
-        self.user_uuid: str | None = None
+        self.client_uuid = TILE_CLIENT_UUID  # Use fixed UUID
+        self.session_cookie: str | None = None
 
-    def _get_headers(self, include_session: bool = False) -> dict[str, str]:
+    def _get_headers(self, include_session: bool = False, include_content_type: bool = False) -> dict[str, str]:
         """Get API request headers.
 
         Args:
-            include_session: Whether to include session token
+            include_session: Whether to include session cookie
+            include_content_type: Whether to include Content-Type header
 
         Returns:
             Headers dict
         """
+        import time
+
         headers = {
-            "User-Agent": f"Tile/{TILE_APP_VERSION}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "tile_api_version": TILE_API_VERSION,
+            "User-Agent": f"Tile/android/{TILE_APP_VERSION} (Unknown; Android11)",
             "tile_app_id": TILE_APP_ID,
             "tile_app_version": TILE_APP_VERSION,
             "tile_client_uuid": self.client_uuid,
+            "tile_request_timestamp": str(int(time.time() * 1000)),
         }
 
-        if include_session and self.session_token:
-            headers["tile_session_id"] = self.session_token
+        if include_content_type:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+        if include_session and self.session_cookie:
+            headers["Cookie"] = self.session_cookie
 
         return headers
 
@@ -86,66 +89,58 @@ class TileAPIClient:
             TileAuthenticationError: If authentication fails
         """
         try:
-            # Step 1: Register client
-            _LOGGER.debug("Registering Tile API client: %s", self.client_uuid)
-            client_url = f"{TILE_API_BASE}/clients/{self.client_uuid}"
+            # Login to Tile API (single POST request)
+            _LOGGER.debug("Logging in to Tile API with email: %s", self.email)
+            session_url = f"{TILE_API_BASE}/clients/{self.client_uuid}/sessions"
 
-            client_data = {
-                "app_id": TILE_APP_ID,
-                "app_version": TILE_APP_VERSION,
-                "locale": "en-US",
-            }
+            # Use form-encoded data, not JSON
+            from aiohttp import FormData
+            form_data = FormData()
+            form_data.add_field("email", self.email)
+            form_data.add_field("password", self.password)
 
-            headers = self._get_headers()
-            _LOGGER.debug("PUT %s", client_url)
+            headers = self._get_headers(include_content_type=True)
+            _LOGGER.debug("POST %s", session_url)
             _LOGGER.debug("Request headers: %s", headers)
-            _LOGGER.debug("Request body: %s", client_data)
+            _LOGGER.debug("Request body: email=%s&password=***", self.email)
 
-            async with self.session.put(
-                client_url,
+            async with self.session.post(
+                session_url,
                 headers=headers,
-                json=client_data,
+                data=f"email={self.email}&password={self.password}",
             ) as resp:
                 _LOGGER.debug("Response status: %s", resp.status)
                 _LOGGER.debug("Response headers: %s", dict(resp.headers))
 
+                # Get session cookie from response
+                set_cookie = resp.headers.get("set-cookie")
+                if set_cookie:
+                    self.session_cookie = set_cookie
+                    _LOGGER.debug("Got session cookie")
+
+                # Check response body
+                resp_text = await resp.text()
+                _LOGGER.debug("Response body: %s", resp_text)
+
                 if resp.status not in (200, 201):
-                    text = await resp.text()
-                    _LOGGER.error("Tile client registration failed: HTTP %s - %s", resp.status, text)
-                    raise TileAuthenticationError(f"Client registration failed: {resp.status}")
-
-                _LOGGER.debug("Tile client registered successfully")
-
-            # Step 2: Create session (login)
-            _LOGGER.debug("Logging in to Tile API with email: %s", self.email)
-            session_url = f"{TILE_API_BASE}/clients/{self.client_uuid}/sessions"
-
-            session_data = {
-                "email": self.email,
-                "password": self.password,
-            }
-
-            async with self.session.post(
-                session_url,
-                headers=self._get_headers(),
-                json=session_data,
-            ) as resp:
-                if resp.status not in (200, 201):
-                    text = await resp.text()
-                    _LOGGER.error("Tile login failed: HTTP %s - %s", resp.status, text)
+                    _LOGGER.error("Tile login failed: HTTP %s - %s", resp.status, resp_text)
                     if resp.status == 401:
                         raise TileAuthenticationError("Invalid Tile email or password")
                     raise TileAuthenticationError(f"Login failed: {resp.status}")
 
-                data = await resp.json()
-                self.session_token = data.get("result", {}).get("session_token")
-                self.user_uuid = data.get("result", {}).get("user", {}).get("user_uuid")
+                # Check for error message in response
+                try:
+                    data = await resp.json() if not resp_text else __import__("json").loads(resp_text)
+                    if data.get("result", {}).get("message") == "Invalid credentials":
+                        raise TileAuthenticationError("Invalid Tile email or password")
+                except Exception:
+                    pass  # Response might not be JSON
 
-                if not self.session_token:
-                    _LOGGER.error("No session token in Tile login response")
-                    raise TileAuthenticationError("No session token received")
+                if not self.session_cookie:
+                    _LOGGER.error("No session cookie in Tile login response")
+                    raise TileAuthenticationError("No session cookie received")
 
-                _LOGGER.info("✅ Tile API authentication successful (user: %s)", self.user_uuid)
+                _LOGGER.info("✅ Tile API authentication successful")
                 return True
 
         except ClientError as err:
@@ -161,76 +156,61 @@ class TileAPIClient:
         Raises:
             TileAPIError: If request fails
         """
-        if not self.session_token:
+        if not self.session_cookie:
             raise TileAPIError("Not authenticated - call authenticate() first")
 
         try:
-            # Get tile states (list of tiles)
-            _LOGGER.debug("Fetching Tile device states")
-            states_url = f"{TILE_API_BASE}/tiles/tile_states"
+            # Get all devices from /users/groups endpoint
+            _LOGGER.debug("Fetching Tile devices from /users/groups")
+            groups_url = f"{TILE_API_BASE}/users/groups?last_modified_timestamp=0"
 
             async with self.session.get(
-                states_url,
+                groups_url,
                 headers=self._get_headers(include_session=True),
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    _LOGGER.error("Tile states request failed: HTTP %s - %s", resp.status, text)
-                    raise TileAPIError(f"Failed to get tile states: {resp.status}")
+                    _LOGGER.error("Tile groups request failed: HTTP %s - %s", resp.status, text)
+                    raise TileAPIError(f"Failed to get tile groups: {resp.status}")
 
-                states_data = await resp.json()
-                tile_ids = states_data.get("result", [])
-                _LOGGER.debug("Found %d Tile devices", len(tile_ids))
+                data = await resp.json()
+                _LOGGER.debug("Groups response: %s", data)
 
-            # Get details for each tile (including authKey)
-            tiles = {}
-            for tile_id in tile_ids:
-                _LOGGER.debug("Fetching details for Tile: %s", tile_id)
-                tile_url = f"{TILE_API_BASE}/tiles/{tile_id}"
+                nodes = data.get("result", {}).get("nodes", {})
+                _LOGGER.debug("Found %d nodes", len(nodes))
 
-                async with self.session.get(
-                    tile_url,
-                    headers=self._get_headers(include_session=True),
-                ) as resp:
-                    if resp.status == 200:
-                        tile_data = await resp.json()
-                        result = tile_data.get("result", {})
+                # Extract Tile devices
+                tiles = {}
+                for node_id, node_data in nodes.items():
+                    if node_data.get("node_type") != "TILE":
+                        _LOGGER.debug("Skipping non-TILE node: %s", node_id)
+                        continue
 
-                        # Extract important fields
+                    auth_key = node_data.get("auth_key")
+                    name = node_data.get("name", f"Tile {node_id[:8]}")
+                    product_code = node_data.get("product_code", "UNKNOWN")
+
+                    if auth_key:
                         tile_info = {
-                            "tile_id": result.get("tile_id"),
-                            "tile_uuid": result.get("tile_uuid"),
-                            "name": result.get("name", f"Tile {tile_id[:8]}"),
-                            "archetype": result.get("archetype"),
-                            "auth_key": result.get("auth_key"),  # BLE authentication key!
-                            "tile_type": result.get("tile_type"),
-                            "hw_version": result.get("hw_version"),
-                            "fw_version": result.get("fw_version"),
-                            "last_tile_state": result.get("last_tile_state", {}),
+                            "tile_id": node_id,
+                            "name": name,
+                            "auth_key": auth_key,  # Base64 encoded
+                            "product_code": product_code,
+                            "firmware": node_data.get("firmware", {}),
+                            "node_type": node_data.get("node_type"),
                         }
 
-                        if tile_info["auth_key"]:
-                            _LOGGER.info(
-                                "✓ Retrieved Tile: %s (authKey: %d bytes)",
-                                tile_info["name"],
-                                len(tile_info["auth_key"]) if isinstance(tile_info["auth_key"], str) else 0,
-                            )
-                            tiles[tile_id] = tile_info
-                        else:
-                            _LOGGER.warning("No authKey found for Tile: %s", tile_id)
-
-                    elif resp.status == 412:
-                        # Some Tiles (like Tile Labels) may return 412
-                        _LOGGER.debug("Tile %s returned 412 (may not support all features)", tile_id)
-                    else:
-                        text = await resp.text()
-                        _LOGGER.warning(
-                            "Failed to get details for Tile %s: HTTP %s - %s",
-                            tile_id, resp.status, text[:200]
+                        tiles[node_id] = tile_info
+                        _LOGGER.info(
+                            "✓ Retrieved Tile: %s (%s)",
+                            name,
+                            product_code,
                         )
+                    else:
+                        _LOGGER.warning("No authKey found for Tile: %s", node_id)
 
-            _LOGGER.info("Successfully retrieved %d Tiles with auth keys", len(tiles))
-            return tiles
+                _LOGGER.info("Successfully retrieved %d Tiles with auth keys", len(tiles))
+                return tiles
 
         except ClientError as err:
             _LOGGER.error("Tile API connection error: %s", err)

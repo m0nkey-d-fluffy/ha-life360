@@ -101,13 +101,20 @@ class TileAPIClient:
             _LOGGER.debug("Request headers: %s", headers)
             _LOGGER.debug("Request body: %s", client_data)
 
+            # Try sending as form data instead of JSON
+            import json as json_module
             async with self.session.put(
                 client_url,
                 headers=headers,
-                json=client_data,
+                data=json_module.dumps(client_data),
             ) as resp:
                 _LOGGER.debug("Response status: %s", resp.status)
                 _LOGGER.debug("Response headers: %s", dict(resp.headers))
+
+                # Log response body for debugging
+                resp_text = await resp.text()
+                if resp_text:
+                    _LOGGER.debug("Response body: %s", resp_text)
 
                 if resp.status not in (200, 201):
                     text = await resp.text()

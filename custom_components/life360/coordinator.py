@@ -670,12 +670,25 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                                 device_id, flat_device.get("name"),
                                             )
                                     else:
-                                        _LOGGER.warning(
-                                            "⚠ No cached name found for device %s (cache has %d entries: %s)",
-                                            device_id,
-                                            len(self._device_name_cache),
-                                            list(self._device_name_cache.keys()),
-                                        )
+                                        # Check provider before warning
+                                        provider = (
+                                            flat_device.get("provider") or
+                                            nested_data.get("provider") or
+                                            ""
+                                        ).lower()
+                                        # Don't warn for Tile devices - names come from Tile API via BLE
+                                        if provider != "tile":
+                                            _LOGGER.warning(
+                                                "⚠ No cached name found for device %s (cache has %d entries: %s)",
+                                                device_id,
+                                                len(self._device_name_cache),
+                                                list(self._device_name_cache.keys()),
+                                            )
+                                        else:
+                                            _LOGGER.debug(
+                                                "No cached name for Tile %s (names come from Tile API)",
+                                                device_id,
+                                            )
                                     if device_id and device_id in self._device_avatar_cache:
                                         if not flat_device.get("avatar"):
                                             flat_device["avatar"] = self._device_avatar_cache[device_id]

@@ -1588,18 +1588,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         This endpoint returns all Tile/Jiobit devices for the user with their names and metadata.
         The cid parameter is used to get account credentials but the endpoint returns all devices.
 
+        This provides the critical mapping between Life360 device IDs (from /v5/circles/devices/locations)
+        and Tile BLE device IDs (from Tile API), plus auth keys for BLE authentication.
+
         Args:
             cid: Circle ID (used to get account credentials)
 
         Returns:
             True if metadata was fetched successfully
         """
-        # Skip v6 API calls if no device_id is configured
-        # We now get Tile names directly from Tile API, so v6 is only needed for Jiobit
-        if not self._options.device_id:
-            _LOGGER.debug("Skipping /v6/devices API call - no device_id configured")
-            return False
-
         circle_data = self.data.circles.get(cid)
         if not circle_data:
             return False

@@ -882,64 +882,68 @@ async def diagnose_ring_all_ble_devices(
 
     from homeassistant.components import bluetooth
 
-    # Get all devices from HA's Bluetooth backend
-    service_info_list = bluetooth.async_discovered_service_info(hass)
+    # Get all devices from HA's Bluetooth backend - make a list copy to avoid modification during iteration
+    service_info_list = list(bluetooth.async_discovered_service_info(hass))
 
     _LOGGER.warning("📡 Found %d BLE devices total", len(service_info_list))
 
     results = {}
 
-    # Pick the first auth key to try (we don't know which Tile is which yet)
     if not auth_keys:
         _LOGGER.error("❌ No auth keys provided - cannot authenticate with Tiles")
         return {}
 
-    # Try each auth key
-    for tile_id, auth_key in auth_keys.items():
-        _LOGGER.warning("🔑 Using auth key for Tile ID: %s", tile_id)
+    _LOGGER.warning("🔑 Have %d auth keys to try", len(auth_keys))
 
-        # Try each device
-        for idx, service_info in enumerate(service_info_list, 1):
-            device = service_info.device
-            _LOGGER.warning("─────────────────────────────────────────────────────────")
-            _LOGGER.warning("📱 %d/%d: Testing %s (%s)",
-                          idx, len(service_info_list),
-                          service_info.name or "Unknown",
-                          device.address)
+    # Try each device once
+    for idx, service_info in enumerate(service_info_list, 1):
+        device = service_info.device
+        _LOGGER.warning("─────────────────────────────────────────────────────────")
+        _LOGGER.warning("📱 %d/%d: Testing %s (%s)",
+                      idx, len(service_info_list),
+                      service_info.name or "Unknown",
+                      device.address)
 
-            client = None
+        client = None
+        try:
+            # Try to connect
+            _LOGGER.warning("   🔌 Connecting...")
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                device.name or device.address,
+                disconnected_callback=lambda _: None,
+                max_attempts=1,  # Only 1 attempt to keep it fast
+                timeout=10.0,
+            )
+
+            if not client.is_connected:
+                _LOGGER.warning("   ❌ Connection failed")
+                results[device.address] = "connection_failed"
+                continue
+
+            _LOGGER.warning("   ✅ Connected!")
+
+            # Try to subscribe to Tile response characteristic
             try:
-                # Try to connect
-                _LOGGER.warning("   🔌 Connecting...")
-                client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    device,
-                    device.name or device.address,
-                    disconnected_callback=lambda _: None,
-                    max_attempts=1,  # Only 1 attempt to keep it fast
-                    timeout=10.0,
-                )
+                response_data = None
 
-                if not client.is_connected:
-                    _LOGGER.warning("   ❌ Connection failed")
-                    results[device.address] = "connection_failed"
-                    continue
+                def response_handler(sender, data):
+                    nonlocal response_data
+                    response_data = data
 
-                _LOGGER.warning("   ✅ Connected!")
+                await client.start_notify(MEP_RESPONSE_CHAR_UUID, response_handler)
+                _LOGGER.warning("   ✅ Subscribed to Tile response characteristic")
 
-                # Try to subscribe to Tile response characteristic
-                try:
-                    response_data = None
+                # Try authentication with EACH auth key until one works
+                auth_success = False
+                working_tile_id = None
+                working_auth_key = None
 
-                    def response_handler(sender, data):
-                        nonlocal response_data
-                        response_data = data
+                for tile_id, auth_key in auth_keys.items():
+                    _LOGGER.warning("   🔐 Trying auth key for Tile: %s", tile_id)
+                    response_data = None  # Reset for each attempt
 
-                    await client.start_notify(MEP_RESPONSE_CHAR_UUID, response_handler)
-                    _LOGGER.warning("   ✅ Subscribed to Tile response characteristic")
-
-                    # Try authentication
-                    _LOGGER.warning("   🔐 Attempting Tile authentication...")
                     rand_a = os.urandom(8)
                     auth_cmd = bytes([ToaCommand.AUTH]) + rand_a
                     await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, auth_cmd)
@@ -972,27 +976,29 @@ async def diagnose_ring_all_ble_devices(
 
                         _LOGGER.warning("   ✅ Ring command sent! Listen for the Tile!")
                         results[device.address] = f"SUCCESS_TILE_{tile_id}"
+                        auth_success = True
+                        break  # Found the right auth key, stop trying others
 
-                    else:
-                        _LOGGER.warning("   ❌ No Tile response - not a Tile")
-                        results[device.address] = "not_a_tile"
-
-                except Exception as char_err:
-                    _LOGGER.warning("   ❌ Not a Tile (no characteristic): %s", str(char_err)[:50])
+                if not auth_success:
+                    _LOGGER.warning("   ❌ No Tile response - not a Tile or wrong auth keys")
                     results[device.address] = "not_a_tile"
 
-            except asyncio.TimeoutError:
-                _LOGGER.warning("   ⏱️  Timeout")
-                results[device.address] = "timeout"
-            except Exception as err:
-                _LOGGER.warning("   ❌ Error: %s", str(err)[:50])
-                results[device.address] = f"error: {str(err)[:30]}"
-            finally:
-                if client and client.is_connected:
-                    try:
-                        await client.disconnect()
-                    except Exception:
-                        pass
+            except Exception as char_err:
+                _LOGGER.warning("   ❌ Not a Tile (no characteristic): %s", str(char_err)[:50])
+                results[device.address] = "not_a_tile"
+
+        except asyncio.TimeoutError:
+            _LOGGER.warning("   ⏱️  Timeout")
+            results[device.address] = "timeout"
+        except Exception as err:
+            _LOGGER.warning("   ❌ Error: %s", str(err)[:50])
+            results[device.address] = f"error: {str(err)[:30]}"
+        finally:
+            if client and client.is_connected:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
 
     _LOGGER.warning("═══════════════════════════════════════════════════════════")
     _LOGGER.warning("📊 RING ALL RESULTS:")

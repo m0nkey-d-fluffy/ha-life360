@@ -69,6 +69,10 @@ diagnose_ring_tile_by_mac:
       selector:
         text:
 
+diagnose_list_tiles:
+  name: List All Tiles
+  description: "DIAGNOSTIC: Lists all cached Tile devices with their device IDs, MAC addresses, Tile IDs, and auth key status. Use this to get the information needed for ring tests. Results are shown in logs and a notification."
+
 buzz_jiobit:
   name: Buzz Jiobit Device
   description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound. You can use either entity_id (easier) or device_id + circle_id (advanced).

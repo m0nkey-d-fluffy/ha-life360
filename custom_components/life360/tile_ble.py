@@ -1117,6 +1117,67 @@ async def diagnose_ring_tile_by_mac(
         }
 
 
+async def diagnose_list_tiles(coordinator) -> dict[str, Any]:
+    """List all cached Tile devices with their IDs, MACs, and auth keys.
+
+    Args:
+        coordinator: The Life360 coordinator instance
+
+    Returns:
+        Dictionary with all Tile device information
+    """
+    result = {
+        "tiles": [],
+        "count": 0,
+    }
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("📋 DIAGNOSTIC: List all cached Tile devices")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    # Get all Tile devices from MAC cache
+    for device_id, mac_address in coordinator._tile_mac_cache.items():
+        # Try to find the Tile ID from auth cache
+        tile_id = None
+        has_auth = False
+
+        for tid, auth_key in coordinator._tile_auth_cache.items():
+            # Derive MAC from this Tile ID to see if it matches
+            derived_mac = TileBleClient._tile_id_to_mac(tid)
+            if derived_mac.upper() == mac_address.upper():
+                tile_id = tid
+                has_auth = True
+                break
+
+        tile_info = {
+            "device_id": device_id,
+            "mac_address": mac_address,
+            "tile_id": tile_id or "Unknown",
+            "has_auth_key": has_auth,
+        }
+
+        result["tiles"].append(tile_info)
+
+        _LOGGER.warning(
+            "  🔹 Device: %s\n"
+            "     MAC: %s\n"
+            "     Tile ID: %s\n"
+            "     Auth: %s",
+            device_id,
+            mac_address,
+            tile_id or "Unknown",
+            "✓" if has_auth else "✗"
+        )
+
+    result["count"] = len(result["tiles"])
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("✅ Found %d Tile device(s)", result["count"])
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    return result
+
+
 async def diagnose_raw_ble_scan(scan_timeout: float = 30.0) -> dict[str, Any]:
     """Direct BLE scan bypassing HA's backend to capture raw advertisement data.
 

@@ -126,7 +126,22 @@ async def fetch_devices(bearer_token, device_id, circle_id):
                 data = json.loads(response.text)
                 return data
             else:
-                print(f"ERROR: API returned {response.status_code}: {response.text[:200]}", file=sys.stderr)
+                # Log more details for 401 errors
+                error_msg = f"ERROR: API returned {response.status_code}"
+                if response.text:
+                    error_msg += f": {response.text[:200]}"
+                else:
+                    error_msg += " (no response body)"
+
+                # Add authentication debugging for 401 errors
+                if response.status_code == 401:
+                    print(f"{error_msg}", file=sys.stderr)
+                    print(f"DEBUG: Bearer token length: {len(bearer_token) if bearer_token else 0}", file=sys.stderr)
+                    print(f"DEBUG: Device ID: {device_id[:20] if device_id else 'None'}", file=sys.stderr)
+                    print(f"DEBUG: Circle ID: {circle_id[:20] if circle_id else 'None'}", file=sys.stderr)
+                else:
+                    print(error_msg, file=sys.stderr)
+
                 return None
 
     except Exception as e:

@@ -1871,10 +1871,17 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                         name or device_id, list(type_data.keys()))
                             _LOGGER.debug("Full typeData for %s: %s", device_id, type_data)
 
+                            # Check nested objects within typeData
+                            expected_fw_config = type_data.get("expectedFirmwareConfig") or type_data.get("expected_firmware_config") or {}
+                            if expected_fw_config and isinstance(expected_fw_config, dict):
+                                _LOGGER.info("🔍 v6 API expectedFirmwareConfig fields for %s: %s",
+                                            name or device_id, list(expected_fw_config.keys()))
+                                _LOGGER.debug("Full expectedFirmwareConfig for %s: %s", device_id, expected_fw_config)
+
                         tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
                         auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
 
-                        # Check for MAC address in typeData
+                        # Check for MAC address in typeData AND nested objects
                         mac_address = (
                             type_data.get("macAddress") or
                             type_data.get("mac_address") or
@@ -1884,6 +1891,16 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             type_data.get("hardware_address") or
                             type_data.get("address")
                         )
+
+                        # Also check in expectedFirmwareConfig
+                        if not mac_address and expected_fw_config and isinstance(expected_fw_config, dict):
+                            mac_address = (
+                                expected_fw_config.get("macAddress") or
+                                expected_fw_config.get("mac_address") or
+                                expected_fw_config.get("bleAddress") or
+                                expected_fw_config.get("ble_address")
+                            )
+
                         if mac_address:
                             _LOGGER.info("✅ Found MAC address in v6 API for %s: %s", name or device_id, mac_address)
 

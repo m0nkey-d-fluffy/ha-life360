@@ -433,10 +433,15 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
                 # Check what attributes the coordinator has
                 if hasattr(coordinator, "_tile_auth_cache"):
                     _LOGGER.warning("      ✅ Has _tile_auth_cache with %d items", len(coordinator._tile_auth_cache))
-                    for tile_id, auth_key_hex in coordinator._tile_auth_cache.items():
+                    for tile_id, auth_key in coordinator._tile_auth_cache.items():
                         try:
-                            auth_keys[tile_id] = bytes.fromhex(auth_key_hex)
-                            _LOGGER.warning("         🔑 Found auth key for Tile: %s", tile_id)
+                            # Auth key might already be bytes or could be a hex string
+                            if isinstance(auth_key, bytes):
+                                auth_keys[tile_id] = auth_key
+                                _LOGGER.warning("         🔑 Found auth key for Tile: %s (already bytes, %d bytes)", tile_id, len(auth_key))
+                            else:
+                                auth_keys[tile_id] = bytes.fromhex(auth_key)
+                                _LOGGER.warning("         🔑 Found auth key for Tile: %s (converted from hex)", tile_id)
                         except Exception as e:
                             _LOGGER.warning("         ❌ Failed to parse auth key for %s: %s", tile_id, e)
                 else:

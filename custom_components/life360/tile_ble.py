@@ -1042,8 +1042,8 @@ async def diagnose_ring_tile_by_mac(
     _LOGGER.warning("   Auth key length: %d bytes", len(auth_key))
 
     try:
-        # Create Tile BLE client
-        client = TileBleClient(mac_address, auth_key, timeout=30.0)
+        # Create Tile BLE client with the Tile ID (not MAC address!)
+        client = TileBleClient(tile_id, auth_key, timeout=30.0)
 
         _LOGGER.warning("🔌 Connecting to Tile...")
         connected = await client.connect()

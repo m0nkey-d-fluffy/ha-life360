@@ -419,18 +419,31 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
             # Get Tile auth keys from all entries
             auth_keys = {}
             entries = hass.config_entries.async_entries(DOMAIN)
+            _LOGGER.warning("🔍 Checking %d config entries for Tile auth keys", len(entries))
+
             for entry in entries:
+                _LOGGER.warning("   Entry: %s", entry.entry_id)
                 if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    _LOGGER.warning("      ❌ No runtime_data")
                     continue
 
                 coordinator = entry.runtime_data.coordinator
+                _LOGGER.warning("      ✅ Has coordinator")
+
+                # Check what attributes the coordinator has
                 if hasattr(coordinator, "_tile_auth_cache"):
+                    _LOGGER.warning("      ✅ Has _tile_auth_cache with %d items", len(coordinator._tile_auth_cache))
                     for tile_id, auth_key_hex in coordinator._tile_auth_cache.items():
                         try:
                             auth_keys[tile_id] = bytes.fromhex(auth_key_hex)
-                            _LOGGER.warning("🔑 Found auth key for Tile: %s", tile_id)
-                        except Exception:
-                            pass
+                            _LOGGER.warning("         🔑 Found auth key for Tile: %s", tile_id)
+                        except Exception as e:
+                            _LOGGER.warning("         ❌ Failed to parse auth key for %s: %s", tile_id, e)
+                else:
+                    _LOGGER.warning("      ❌ No _tile_auth_cache attribute")
+                    # List all attributes that start with _tile
+                    tile_attrs = [attr for attr in dir(coordinator) if attr.startswith('_tile')]
+                    _LOGGER.warning("      Available _tile* attributes: %s", tile_attrs)
 
             if not auth_keys:
                 _LOGGER.error("❌ No Tile auth keys found - make sure Tiles are configured")

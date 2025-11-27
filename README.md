@@ -3,6 +3,49 @@
 A [Home Assistant](https://www.home-assistant.io/) integration for Life360.
 Creates Device Tracker (`device_tracker`) entities to show where Life360 Members are located.
 
+---
+
+## 🚀 Fork Improvements
+
+This is an **enhanced fork** of the original [ha-life360](https://github.com/pnbruckner/ha-life360) integration by [@pnbruckner](https://github.com/pnbruckner).
+
+**Major enhancements in this fork:**
+
+### Tile/Jiobit Device Name Automation
+- ✨ **Automatic device names** - No manual configuration required!
+- 🔧 **Auto-generated device IDs** - Randomly generated Android device IDs (no network capture needed)
+- 🔒 **Cloudflare WAF bypass** - curl_cffi subprocess with TLS fingerprinting
+- 🔄 **Session establishment** - Mimics mobile app behavior to avoid blocking
+- 📡 **v6 API integration** - Fetches device names via Life360's v6/devices endpoint
+- 🗂️ **Bidirectional caching** - Maps Life360 IDs ↔ Tile BLE IDs ↔ Device Names
+
+### Tile BLE Authentication
+- 🔑 **Form-encoded authentication** - Proper Tile API authentication for BLE commands
+- 📱 **Auth key extraction** - Automatically decodes base64 auth keys from v6 API
+- 🎯 **Multiple fallbacks** - Extracts auth data from v5/circles/devices/locations OR v6/devices
+- 🔊 **Ring command support** - Full BLE ringing functionality for Tile devices
+
+### Developer Tools & Documentation
+- 🛠️ **Comprehensive test suite** - Standalone tools for v6 API testing and debugging
+- 📚 **Developer tools** (`tools/` directory) - Test scripts, decoders, and documentation
+- 📖 **Architecture guides** - Complete documentation of device mapping and caching
+- 🐛 **Debugging utilities** - Device mapping decoder, auth key visualizer
+
+### Technical Implementation
+- 🔐 **TLS fingerprinting** - Impersonates Android Chrome to bypass Cloudflare
+- 🌐 **HTTP/2 support** - Native HTTP/2 matching mobile app protocol
+- 🍪 **Cookie handling** - Persistent session cookies across requests
+- ☁️ **CloudEvents headers** - Proper ce-* headers required by v6 API
+- ⚙️ **Automatic dependency management** - curl_cffi auto-installed via HACS
+- 🏗️ **Subprocess architecture** - Clean separation of curl_cffi from HA core
+
+**Original integration:** https://github.com/pnbruckner/ha-life360
+**This fork:** https://github.com/m0nkey-d-fluffy/ha-life360
+
+Special thanks to [@pnbruckner](https://github.com/pnbruckner) for the original integration foundation!
+
+---
+
 **New in v0.7.0:**
 
 **Device Tracking:**
@@ -87,11 +130,11 @@ Or you can manually install the software.
    It should then appear as a new integration. Click on it. If necessary, search for "life360".
 
    ```text
-   https://github.com/pnbruckner/ha-life360
+   https://github.com/m0nkey-d-fluffy/ha-life360
    ```
    Or use this button:
-   
-   [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=pnbruckner&repository=ha-life360&category=integration)
+
+   [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=m0nkey-d-fluffy&repository=ha-life360&category=integration)
 
 
 1. Download the integration using the appropriate button.
@@ -130,20 +173,23 @@ Find or search for "Life360", click on it, then follow the prompts.
 
 #### Device ID (Optional)
 
-**For Tile/Jiobit Device Names**
+**For Tile/Jiobit Device Names** ✨ **Automatic!**
 
-If you have Tile Bluetooth trackers or Jiobit pet GPS devices linked to your Life360 account, you can optionally provide your Life360 device ID to enable proper device names.
+The integration now **automatically displays proper device names** for Tile Bluetooth trackers and Jiobit pet GPS devices!
 
-- **With Device ID**: Devices show their actual names from Life360 (e.g., "Keys", "Wallet", "Fluffy")
-- **Without Device ID**: Devices show generic names (e.g., "Tile 12345678") that you can manually rename in Home Assistant
+- **Automatic device names**: Shows actual names from Life360 (e.g., "Keys", "Wallet", "Fluffy")
+- **Zero configuration**: Device ID is auto-generated, no manual setup needed
+- **Works immediately**: Install via HACS and device names appear automatically
 
-The device ID is a unique identifier from your Life360 mobile app installation. It looks like:
-- Android: `androidXxYyZz1234AbCdEf5678Gh`
-- iOS: Similar format starting with "ios"
+**How it works:**
+1. The integration auto-generates a random Android device ID (e.g., `androidK3mP9xQw2Vn4Ry8Lz7Jc5T`)
+2. Uses curl_cffi to bypass Cloudflare WAF and fetch device names from Life360's v6 API
+3. Automatically maps Life360 device IDs to Tile BLE IDs and decodes authentication keys
+4. Caches all device metadata for instant access
 
-To obtain your device ID, you'll need to capture network traffic from the Life360 app using tools like mitmproxy or Charles Proxy. Look for the `x-device-id` header in API requests.
+**No manual configuration required!** Just install via HACS and restart Home Assistant.
 
-See [Tile & Device Tracker Support](docs/tiles-and-devices.md#configuring-device-id) for detailed instructions.
+See [Tile & Device Tracker Support](docs/tiles-and-devices.md) for technical details and troubleshooting.
 
 #### GPS Accuracy Radius Limit
 

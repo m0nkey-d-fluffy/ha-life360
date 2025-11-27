@@ -1813,7 +1813,6 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     for item in items:
                         # Log all available fields to find MAC addresses
                         _LOGGER.debug("🔍 v6 API item fields: %s", list(item.keys()))
-                        _LOGGER.debug("Full v6 API item: %s", item)
 
                         item_type = item.get("type", "device")
 
@@ -1869,14 +1868,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                         if type_data:
                             _LOGGER.debug("📍 v6 API typeData fields for %s: %s",
                                         name or device_id, list(type_data.keys()))
-                            _LOGGER.debug("Full typeData for %s: %s", device_id, type_data)
 
                             # Check nested objects within typeData
                             expected_fw_config = type_data.get("expectedFirmwareConfig") or type_data.get("expected_firmware_config") or {}
                             if expected_fw_config and isinstance(expected_fw_config, dict):
                                 _LOGGER.debug("🔍 v6 API expectedFirmwareConfig fields for %s: %s",
                                             name or device_id, list(expected_fw_config.keys()))
-                                _LOGGER.debug("Full expectedFirmwareConfig for %s: %s", device_id, expected_fw_config)
 
                         tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
                         auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""

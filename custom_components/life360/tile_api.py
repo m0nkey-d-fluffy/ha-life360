@@ -176,6 +176,11 @@ class TileAPIClient:
                 data = await resp.json()
                 _LOGGER.debug("Groups response: %s", data)
 
+                # Log full response structure to find MAC addresses
+                _LOGGER.info("🔍 Tile API response top-level keys: %s", list(data.keys()))
+                if "result" in data:
+                    _LOGGER.info("🔍 Tile API result keys: %s", list(data.get("result", {}).keys()))
+
                 nodes = data.get("result", {}).get("nodes", {})
                 _LOGGER.debug("Found %d nodes", len(nodes))
 
@@ -187,11 +192,22 @@ class TileAPIClient:
                         continue
 
                     # Log all available fields to find MAC address
-                    _LOGGER.info("🔍 Tile %s raw fields: %s", node_id[:8], list(node_data.keys()))
+                    _LOGGER.info("🔍 Tile API node %s raw fields: %s", node_id[:8], list(node_data.keys()))
+                    _LOGGER.debug("Full node_data for %s: %s", node_id, node_data)
 
                     auth_key = node_data.get("auth_key")
                     name = node_data.get("name", f"Tile {node_id[:8]}")
                     product_code = node_data.get("product_code", "UNKNOWN")
+
+                    # Check for MAC address fields
+                    mac_address = (
+                        node_data.get("mac_address") or
+                        node_data.get("ble_address") or
+                        node_data.get("hardware_address") or
+                        node_data.get("address")
+                    )
+                    if mac_address:
+                        _LOGGER.info("✅ Found MAC address for %s: %s", name, mac_address)
 
                     if auth_key:
                         tile_info = {
@@ -202,6 +218,10 @@ class TileAPIClient:
                             "firmware": node_data.get("firmware", {}),
                             "node_type": node_data.get("node_type"),
                         }
+
+                        # Add MAC address if found
+                        if mac_address:
+                            tile_info["mac_address"] = mac_address
 
                         tiles[node_id] = tile_info
                         _LOGGER.info(

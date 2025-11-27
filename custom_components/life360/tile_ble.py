@@ -132,6 +132,17 @@ class TileBleClient:
             )
             _LOGGER.info("📡 BLE scan complete: Found %d Tile devices nearby", len(devices))
 
+            # Log all found devices for debugging
+            _LOGGER.info("Devices found:")
+            for i, device in enumerate(devices, 1):
+                _LOGGER.info(
+                    "  [%d] name='%s', address=%s, rssi=%s",
+                    i,
+                    device.name or "N/A",
+                    device.address,
+                    getattr(device, 'rssi', 'N/A')
+                )
+
             for device in devices:
                 _LOGGER.debug(
                     "  Device found: name=%s, address=%s, rssi=%s",

@@ -27,6 +27,7 @@ from .const import (
     DOMAIN,
     SERVICE_BUZZ_JIOBIT,
     SERVICE_DIAGNOSE_TILE_BLE,
+    SERVICE_DIAGNOSE_RING_ALL_BLE,
     SERVICE_GET_DEVICES,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
@@ -402,6 +403,65 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
             return {"tiles_found": 0, "mappings": [], "error": str(err)}
 
     hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_TILE_BLE, diagnose_tile_ble)
+
+    async def diagnose_ring_all_ble(call: ServiceCall) -> dict:
+        """Brute-force diagnostic to ring ALL BLE devices and find Tiles.
+
+        Attempts to connect to every BLE device and try Tile authentication/ring.
+        """
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔥 Service %s called - will try ALL BLE devices!", SERVICE_DIAGNOSE_RING_ALL_BLE)
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_ring_all_ble_devices
+
+            # Get Tile auth keys from all entries
+            auth_keys = {}
+            entries = hass.config_entries.async_entries(DOMAIN)
+            for entry in entries:
+                if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    continue
+
+                coordinator = entry.runtime_data.coordinator
+                if hasattr(coordinator, "_tile_auth_cache"):
+                    for tile_id, auth_key_hex in coordinator._tile_auth_cache.items():
+                        try:
+                            auth_keys[tile_id] = bytes.fromhex(auth_key_hex)
+                            _LOGGER.warning("🔑 Found auth key for Tile: %s", tile_id)
+                        except Exception:
+                            pass
+
+            if not auth_keys:
+                _LOGGER.error("❌ No Tile auth keys found - make sure Tiles are configured")
+                return {"devices_tested": 0, "tiles_found": 0, "error": "No auth keys"}
+
+            # Run the brute-force test
+            results = await diagnose_ring_all_ble_devices(hass, auth_keys)
+
+            tiles_found = sum(1 for r in results.values() if "SUCCESS" in r)
+
+            result = {
+                "devices_tested": len(results),
+                "tiles_found": tiles_found,
+                "results": [
+                    {"mac": mac, "result": res}
+                    for mac, res in results.items()
+                ],
+            }
+
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+            _LOGGER.warning("✅ Service %s completed: Found %d Tile(s) out of %d devices",
+                          SERVICE_DIAGNOSE_RING_ALL_BLE, tiles_found, len(results))
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+            return result
+
+        except Exception as err:
+            _LOGGER.error("❌ Ring-all diagnostic failed: %s", err, exc_info=True)
+            return {"devices_tested": 0, "tiles_found": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_RING_ALL_BLE, diagnose_ring_all_ble)
 
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.

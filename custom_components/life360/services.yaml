@@ -30,6 +30,10 @@ diagnose_tile_ble:
   name: Diagnose Tile BLE Connections
   description: Scan for all Tile devices via Bluetooth and read their actual device IDs to verify MAC address mappings. This diagnostic tool helps troubleshoot BLE connectivity issues by connecting to each Tile and reading its device ID from GATT characteristics. Check your Home Assistant logs for detailed results.
 
+diagnose_ring_all_ble:
+  name: Ring All BLE Devices (Brute Force)
+  description: "DIAGNOSTIC: Attempts to connect to EVERY BLE device seen by Home Assistant and tries to ring it as a Tile. This brute-force approach helps identify which MAC addresses are actually Tiles. WARNING: This will attempt connections to all nearby BLE devices. Check logs for results and listen for which Tiles ring!"
+
 buzz_jiobit:
   name: Buzz Jiobit Device
   description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound. You can use either entity_id (easier) or device_id + circle_id (advanced).

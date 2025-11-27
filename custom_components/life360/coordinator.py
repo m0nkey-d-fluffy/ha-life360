@@ -15,6 +15,8 @@ import json
 import logging
 from math import ceil
 from pathlib import Path
+import secrets
+import string
 import sys
 from typing import Any, TypeVar, TypeVarTuple, cast
 import uuid
@@ -1557,12 +1559,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
     async def _get_or_register_device_id(
         self, aid: AccountID, acct: helpers.AccountDetails
     ) -> str | None:
-        """Get configured device ID for API requests.
+        """Get or generate a device ID for API requests.
 
-        Returns the device ID from config options if provided by the user.
-        If no device ID is configured, returns None and Tile devices will show generic names.
+        Returns a device ID from config options if provided, otherwise generates
+        a random Android device ID that follows the standard naming convention.
 
-        Users can obtain their device ID from their Life360 Android/iOS app installation.
+        The generated ID format: "android" + 22 random alphanumeric characters
+        Example: androideDb6Dr3GQuOfOkQqpaiV6t
+
+        This works because the v6 API only validates the format, not the actual device.
         """
         # Return cached ID if available
         if self._registered_device_id:
@@ -1575,15 +1580,26 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             _LOGGER.info("Using configured device ID: %s", configured_device_id)
             return self._registered_device_id
 
-        # No device ID configured
+        # Generate a random Android device ID automatically
         if not self._device_registration_attempted:
             self._device_registration_attempted = True
+
+            # Generate random device ID following Android naming standard:
+            # "android" + 22 alphanumeric characters (mix of upper/lower case + digits)
+            alphabet = string.ascii_letters + string.digits  # a-z, A-Z, 0-9
+            random_suffix = ''.join(secrets.choice(alphabet) for _ in range(22))
+            self._registered_device_id = f"android{random_suffix}"
+
             _LOGGER.info(
-                "No device ID configured. Tile/Jiobit devices will show generic names. "
-                "To see actual device names, configure your device ID in integration options."
+                "Generated random Android device ID: %s",
+                self._registered_device_id
+            )
+            _LOGGER.debug(
+                "This device ID is randomly generated and works with the v6 API. "
+                "It will be reused for the lifetime of this Home Assistant session."
             )
 
-        return None
+        return self._registered_device_id
 
     async def _fetch_v6_via_subprocess(
         self, bearer_token: str, device_id: str, circle_id: str
@@ -1690,13 +1706,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if not acct:
                 continue
 
-            # First try to get registered device ID, or register one if needed
+            # Get or generate a device ID for v6 API authentication
             registered_device_id = await self._get_or_register_device_id(aid, acct)
-
-            # Skip if no device ID configured - v6 API requires it
-            if not registered_device_id:
-                _LOGGER.debug("No device ID configured - skipping v6 API call")
-                return True  # Not an error, just no device names available
 
             try:
                 # APPROACH 1: Try subprocess with curl_cffi first (bypasses Cloudflare)

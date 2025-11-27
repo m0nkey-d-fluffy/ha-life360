@@ -1046,11 +1046,19 @@ async def diagnose_ring_tile_by_mac(
         client = TileBleClient(tile_id, auth_key, timeout=30.0)
 
         _LOGGER.warning("🔌 Connecting to Tile...")
+        _LOGGER.warning("   Scanning for device...")
         connected = await client.connect()
 
         if not connected:
             _LOGGER.error("❌ Failed to connect")
-            return {"success": False, "error": "Connection failed"}
+            # Check if device was found during scan
+            device_found = client._device is not None
+            return {
+                "success": False,
+                "error": "Connection failed",
+                "device_found_in_scan": device_found,
+                "scanned_for_mac": client._tile_id_to_mac(tile_id),
+            }
 
         _LOGGER.warning("✅ Connected!")
 

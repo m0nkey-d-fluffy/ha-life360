@@ -533,7 +533,10 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
                 _LOGGER.error("❌ No auth key found for Tile ID: %s", tile_id)
                 return {"success": False, "error": f"No auth key for {tile_id}"}
 
-            results = await diagnose_ring_tile_by_mac(mac_address, tile_id, auth_key)
+            # Get scan timeout (default 120s, max 600s for 10 minutes)
+            scan_timeout = min(call.data.get("scan_timeout", 120.0), 600.0)
+
+            results = await diagnose_ring_tile_by_mac(mac_address, tile_id, auth_key, scan_timeout)
 
             # Send notification with result
             if results.get("success"):

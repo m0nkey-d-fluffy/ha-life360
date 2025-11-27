@@ -130,20 +130,23 @@ Find or search for "Life360", click on it, then follow the prompts.
 
 #### Device ID (Optional)
 
-**For Tile/Jiobit Device Names**
+**For Tile/Jiobit Device Names** ✨ **Automatic!**
 
-If you have Tile Bluetooth trackers or Jiobit pet GPS devices linked to your Life360 account, you can optionally provide your Life360 device ID to enable proper device names.
+The integration now **automatically displays proper device names** for Tile Bluetooth trackers and Jiobit pet GPS devices!
 
-- **With Device ID**: Devices show their actual names from Life360 (e.g., "Keys", "Wallet", "Fluffy")
-- **Without Device ID**: Devices show generic names (e.g., "Tile 12345678") that you can manually rename in Home Assistant
+- **Automatic device names**: Shows actual names from Life360 (e.g., "Keys", "Wallet", "Fluffy")
+- **Zero configuration**: Device ID is auto-generated, no manual setup needed
+- **Works immediately**: Install via HACS and device names appear automatically
 
-The device ID is a unique identifier from your Life360 mobile app installation. It looks like:
-- Android: `androidXxYyZz1234AbCdEf5678Gh`
-- iOS: Similar format starting with "ios"
+**How it works:**
+1. The integration auto-generates a random Android device ID (e.g., `androidK3mP9xQw2Vn4Ry8Lz7Jc5T`)
+2. Uses curl_cffi to bypass Cloudflare WAF and fetch device names from Life360's v6 API
+3. Automatically maps Life360 device IDs to Tile BLE IDs and decodes authentication keys
+4. Caches all device metadata for instant access
 
-To obtain your device ID, you'll need to capture network traffic from the Life360 app using tools like mitmproxy or Charles Proxy. Look for the `x-device-id` header in API requests.
+**No manual configuration required!** Just install via HACS and restart Home Assistant.
 
-See [Tile & Device Tracker Support](docs/tiles-and-devices.md#configuring-device-id) for detailed instructions.
+See [Tile & Device Tracker Support](docs/tiles-and-devices.md) for technical details and troubleshooting.
 
 #### GPS Accuracy Radius Limit
 

@@ -190,6 +190,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
             # Populate the auth cache
             for tile_id, tile_info in tiles.items():
+                # Log all available fields for debugging
+                _LOGGER.info("📍 Tile %s fields: %s", tile_id[:8], list(tile_info.keys()))
+                _LOGGER.debug("Full tile_info for %s: %s", tile_id, tile_info)
+
                 auth_key_str = tile_info.get("auth_key")
                 tile_uuid = tile_info.get("tile_uuid")
                 tile_name = tile_info.get("name", f"Tile {tile_id[:8]}")

@@ -186,6 +186,9 @@ class TileAPIClient:
                         _LOGGER.debug("Skipping non-TILE node: %s", node_id)
                         continue
 
+                    # Log all available fields to find MAC address
+                    _LOGGER.info("🔍 Tile %s raw fields: %s", node_id[:8], list(node_data.keys()))
+
                     auth_key = node_data.get("auth_key")
                     name = node_data.get("name", f"Tile {node_id[:8]}")
                     product_code = node_data.get("product_code", "UNKNOWN")

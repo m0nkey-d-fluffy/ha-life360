@@ -1046,9 +1046,9 @@ async def diagnose_ring_tile_by_mac(
         client = TileBleClient(mac_address, auth_key, timeout=30.0)
 
         _LOGGER.warning("🔌 Connecting to Tile...")
-        await client.connect()
+        connected = await client.connect()
 
-        if not client.is_connected:
+        if not connected:
             _LOGGER.error("❌ Failed to connect")
             return {"success": False, "error": "Connection failed"}
 

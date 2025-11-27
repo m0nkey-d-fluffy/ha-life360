@@ -285,13 +285,16 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔌 Connecting directly to Tile at %s (30s timeout)...", self._device.address)
+            _LOGGER.info("🔌 Connecting to Tile at %s using bleak-retry-connector...", self._device.address)
 
-            # Use direct BleakClient - simpler and works without HA Bluetooth backend complexity
-            self._client = BleakClient(self._device, timeout=30.0)
-
-            # Connect with asyncio timeout for reliability
-            await asyncio.wait_for(self._client.connect(), timeout=30.0)
+            # Use bleak-retry-connector for reliable connections
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._device,
+                self._device.address,
+                disconnected_callback=self._handle_disconnect,
+                timeout=30.0,
+            )
 
             if not self._client.is_connected:
                 raise BleakError("Connection established but client reports not connected")
@@ -317,6 +320,11 @@ class TileBleClient:
             _LOGGER.error("❌ Failed to connect to Tile: %s", err, exc_info=True)
             self._client = None
             return False
+
+    def _handle_disconnect(self, client: BleakClient) -> None:
+        """Handle disconnection from Tile."""
+        _LOGGER.warning("⚠️ Tile disconnected")
+        self._authenticated = False
 
     async def disconnect(self) -> None:
         """Disconnect from the Tile device."""

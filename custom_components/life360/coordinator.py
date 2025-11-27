@@ -107,6 +107,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         super().__init__(hass, _LOGGER, name="Circles & Members")
         self._store = store
         self.data = self._data_from_store()
+
+        # Debug: Log what's in the config entry options
+        _LOGGER.info("🔧 Loading config options from entry...")
+        _LOGGER.debug("Config entry options keys: %s", list(self.config_entry.options.keys()))
+        _LOGGER.debug("Tile email in options: %s", self.config_entry.options.get("tile_email"))
+        _LOGGER.debug("Tile password in options: %s", "***" if self.config_entry.options.get("tile_password") else None)
+
         self._options = ConfigOptions.from_dict(self.config_entry.options)
         self._acct_data: dict[AccountID, AccountData] = {}
         self._create_acct_data(self._options.accounts)

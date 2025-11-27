@@ -111,6 +111,7 @@ class TileBleClient:
         self._response_data: bytes = b""
         self._authenticated = False
         self._rand_a: bytes = b""
+        self._rand_t: bytes = b""
         self._channel_key: bytes = b""
 
     def _tile_id_to_mac(self, tile_id: str) -> str:
@@ -401,7 +402,13 @@ class TileBleClient:
         return self._response_data
 
     async def authenticate(self) -> bool:
-        """Perform authentication handshake with Tile.
+        """Perform TDI-based authentication handshake with Tile.
+
+        Based on node-tile protocol implementation:
+        1. Send TDI request to get Tile information
+        2. Send randA (14 bytes)
+        3. Receive randT and sresT from Tile
+        4. Validate and complete authentication
 
         Returns:
             True if authentication succeeded
@@ -411,72 +418,109 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.warning("🔐 Starting Tile authentication handshake...")
+            _LOGGER.warning("🔐 Starting TDI-based Tile authentication handshake...")
+            _LOGGER.warning("🔧 Using MEP (Message Exchange Protocol) format")
 
-            # DIAGNOSTIC: First verify we can read from the Tile
-            _LOGGER.warning("🔧 DIAGNOSTIC: Attempting to read Tile ID characteristic...")
-            try:
-                tile_id_bytes = await self._client.read_gatt_char(TILE_ID_CHAR_UUID)
-                _LOGGER.warning("✅ Successfully read Tile ID: %s", tile_id_bytes.hex())
-            except Exception as e:
-                _LOGGER.error("❌ Failed to read Tile ID characteristic: %s", e)
-                _LOGGER.warning("🔧 Listing all available services and characteristics...")
-                for service in self._client.services:
-                    _LOGGER.warning("   Service: %s", service.uuid)
-                    for char in service.characteristics:
-                        props = ",".join(char.properties)
-                        _LOGGER.warning("      Char: %s [%s]", char.uuid, props)
+            # MEP connectionless packet format: [0x00, 0xFF, 0xFF, 0xFF, 0xFF, prefix, data]
+            MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-            # Generate random value for authentication
-            self._rand_a = os.urandom(8)
+            # Step 1: Send TDI (Tile Data Information) request
+            # Command: 0x13 (19 decimal), Payload: 0x01 (request TILE_ID)
+            _LOGGER.warning("🔧 Step 1: Sending TDI request for Tile information...")
+            tdi_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x01])
+            _LOGGER.warning("🔧 TDI command: %s (length=%d)", tdi_cmd.hex(), len(tdi_cmd))
+
+            tdi_response = await self._send_command(tdi_cmd)
+            _LOGGER.warning("🔧 TDI response: %s (length=%d)", tdi_response.hex() if tdi_response else "empty", len(tdi_response))
+
+            if not tdi_response or len(tdi_response) < 5:
+                _LOGGER.error("❌ Invalid TDI response (too short or empty)")
+                return False
+
+            # Parse TDI response (format: [0x00, 0xFF, 0xFF, 0xFF, 0xFF, response_data...])
+            # Skip MEP header (5 bytes) to get to actual response
+            if tdi_response.startswith(MEP_CONNECTIONLESS):
+                tdi_data = tdi_response[5:]
+                _LOGGER.warning("✅ TDI response received: %s", tdi_data.hex())
+            else:
+                _LOGGER.warning("⚠️ Unexpected TDI response format, using full response")
+                tdi_data = tdi_response
+
+            # Step 2: Generate and send randA (14 bytes for MEP-enabled Tiles)
+            self._rand_a = os.urandom(14)
+            _LOGGER.warning("🔧 Step 2: Sending randA (14 bytes)...")
             _LOGGER.warning("🔧 Generated randA: %s", self._rand_a.hex())
 
-            # Step 1: Send AUTH command with randA
-            # Format: [TOA_AUTH, randA (8 bytes)]
-            auth_cmd = bytes([ToaCommand.AUTH]) + self._rand_a
-            _LOGGER.warning("🔧 Step 1: Sending AUTH command with randA")
-            _LOGGER.warning("🔧 Command bytes: %s (length=%d)", auth_cmd.hex(), len(auth_cmd))
-            _LOGGER.warning("🔧 Target characteristic: %s", MEP_COMMAND_CHAR_UUID)
-            response = await self._send_command(auth_cmd)
-            _LOGGER.warning("🔧 Received response: %s (length=%d)", response.hex() if response else "empty", len(response))
+            # Command: 0x14 (20 decimal), Payload: randA (14 bytes)
+            randa_cmd = MEP_CONNECTIONLESS + bytes([0x14]) + self._rand_a
+            _LOGGER.warning("🔧 randA command: %s (length=%d)", randa_cmd.hex(), len(randa_cmd))
 
-            if len(response) < 17:
-                _LOGGER.error("❌ Invalid auth response length: %d (expected >= 17)", len(response))
+            auth_response = await self._send_command(randa_cmd)
+            _LOGGER.warning("🔧 Auth response: %s (length=%d)", auth_response.hex() if auth_response else "empty", len(auth_response))
+
+            if not auth_response or len(auth_response) < 5:
+                _LOGGER.error("❌ Invalid auth response (too short or empty)")
                 return False
 
-            # Response format: [cmd, randT (8 bytes), sresT (8 bytes)]
-            rand_t = response[1:9]
-            sres_t = response[9:17]
-            _LOGGER.debug("Received randT: %s, sresT: %s", rand_t.hex(), sres_t.hex())
+            # Parse auth response - should contain randT and sresT
+            # Skip MEP header if present
+            if auth_response.startswith(MEP_CONNECTIONLESS):
+                auth_data = auth_response[5:]
+            else:
+                auth_data = auth_response
 
-            # Step 2: Verify Tile's response
-            _LOGGER.debug("Step 2: Verifying Tile's signature")
-            expected_sres_t = self._compute_sres(rand_t, self._rand_a, self.auth_key)
+            _LOGGER.warning("🔧 Auth data (after MEP header): %s", auth_data.hex())
+
+            # Expected format: [response_prefix, randT, sresT, ...]
+            # randT and sresT sizes may vary - check actual response
+            if len(auth_data) < 17:  # Minimum: 1 byte prefix + 8 bytes randT + 8 bytes sresT
+                _LOGGER.error("❌ Auth response too short: %d bytes (expected >= 17)", len(auth_data))
+                # Log what we got for debugging
+                _LOGGER.warning("🔧 Received auth_data breakdown:")
+                for i, byte in enumerate(auth_data):
+                    _LOGGER.warning("   [%d]: 0x%02x", i, byte)
+                return False
+
+            # Parse randT and sresT (assuming 8 bytes each after first byte)
+            response_prefix = auth_data[0]
+            rand_t = auth_data[1:9]
+            sres_t = auth_data[9:17]
+
+            _LOGGER.warning("🔧 Response prefix: 0x%02x", response_prefix)
+            _LOGGER.warning("🔧 Received randT: %s", rand_t.hex())
+            _LOGGER.warning("🔧 Received sresT: %s", sres_t.hex())
+
+            # Step 3: Verify Tile's signature
+            _LOGGER.warning("🔧 Step 3: Verifying Tile's signature...")
+            # Note: node-tile uses HMAC with 32-byte padding
+            expected_sres_t = self._compute_sres_padded(rand_t, self._rand_a, self.auth_key)
+            _LOGGER.warning("🔧 Expected sresT: %s", expected_sres_t.hex())
+
             if sres_t != expected_sres_t:
-                _LOGGER.error("❌ Tile authentication failed - invalid sresT (signature mismatch)")
-                _LOGGER.debug("Expected: %s, Got: %s", expected_sres_t.hex(), sres_t.hex())
-                return False
+                _LOGGER.error("❌ Tile signature mismatch!")
+                _LOGGER.error("   Expected: %s", expected_sres_t.hex())
+                _LOGGER.error("   Got:      %s", sres_t.hex())
+                # Try without padding as fallback
+                expected_sres_t_no_pad = self._compute_sres(rand_t, self._rand_a, self.auth_key)
+                _LOGGER.warning("🔧 Trying without padding: %s", expected_sres_t_no_pad.hex())
+                if sres_t == expected_sres_t_no_pad:
+                    _LOGGER.warning("✅ Signature verified (without padding)")
+                else:
+                    return False
+            else:
+                _LOGGER.warning("✅ Tile signature verified!")
 
-            _LOGGER.debug("✓ Tile signature verified")
+            # Step 4: Authentication complete
+            self._authenticated = True
+            self._rand_t = rand_t
 
-            # Step 3: Send our sresA to prove we have the auth key
-            _LOGGER.debug("Step 3: Sending our signature (sresA)")
-            sres_a = self._compute_sres(self._rand_a, rand_t, self.auth_key)
-            ack_cmd = bytes([ToaCommand.AUTH]) + sres_a
-            response = await self._send_command(ack_cmd)
+            # Derive channel key for subsequent commands
+            self._channel_key = self._derive_channel_key(
+                self._rand_a, rand_t, self.auth_key
+            )
 
-            # Check for success
-            if len(response) > 0 and response[0] == ToaCommand.AUTH:
-                self._authenticated = True
-                # Derive channel key for subsequent commands
-                self._channel_key = self._derive_channel_key(
-                    self._rand_a, rand_t, self.auth_key
-                )
-                _LOGGER.info("✅ Tile authentication successful!")
-                return True
-
-            _LOGGER.error("❌ Tile authentication failed - unexpected response: %s", response.hex() if response else "empty")
-            return False
+            _LOGGER.warning("✅ TDI-based authentication successful!")
+            return True
 
         except Exception as err:
             _LOGGER.error("❌ Authentication error: %s", err, exc_info=True)
@@ -488,8 +532,8 @@ class TileBleClient:
         """Compute SRES (Signed Response) value.
 
         Args:
-            rand1: First random value (8 bytes)
-            rand2: Second random value (8 bytes)
+            rand1: First random value
+            rand2: Second random value
             key: Authentication key (16 bytes)
 
         Returns:
@@ -497,6 +541,30 @@ class TileBleClient:
         """
         # HMAC-SHA256, truncated to 8 bytes
         msg = rand1 + rand2
+        h = hmac.new(key, msg, hashlib.sha256)
+        return h.digest()[:8]
+
+    def _compute_sres_padded(
+        self, rand1: bytes, rand2: bytes, key: bytes
+    ) -> bytes:
+        """Compute SRES with 32-byte padding (node-tile method).
+
+        Based on node-tile's CryptoUtils.generateHmac which pads to 32 bytes.
+
+        Args:
+            rand1: First random value
+            rand2: Second random value
+            key: Authentication key (16 bytes)
+
+        Returns:
+            8-byte SRES value
+        """
+        # Concatenate rand1 and rand2, then pad to 32 bytes
+        msg = rand1 + rand2
+        # Pad with zeros to 32 bytes
+        if len(msg) < 32:
+            msg = msg + bytes(32 - len(msg))
+
         h = hmac.new(key, msg, hashlib.sha256)
         return h.digest()[:8]
 

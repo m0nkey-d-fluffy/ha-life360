@@ -552,17 +552,32 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
                     },
                 )
             else:
+                # Build detailed failure message
+                details = [
+                    f"❌ FAILED: {results.get('error', 'Unknown error')}",
+                    "",
+                    f"Target MAC: {mac_address}",
+                    f"Tile ID: {tile_id}",
+                    f"Scanned for MAC: {results.get('scanned_for_mac', 'N/A')}",
+                    "",
+                    f"Device found in scan: {results.get('device_found_in_scan', False)}",
+                    f"Connected: {results.get('connected', False)}",
+                    f"Authenticated: {results.get('authenticated', False)}",
+                ]
+
+                # Add more context based on what failed
+                if not results.get('device_found_in_scan', False):
+                    details.append("")
+                    details.append("💡 Device not found during scan!")
+                    details.append("   - Device may be sleeping")
+                    details.append("   - Press button on device and retry")
+                    details.append("   - Check if device is in range")
+
                 await hass.services.async_call(
                     "persistent_notification",
                     "create",
                     {
-                        "message": (
-                            f"❌ FAILED: {results.get('error', 'Unknown error')}\n\n"
-                            f"MAC: {mac_address}\n"
-                            f"Tile ID: {tile_id}\n"
-                            f"Connected: {results.get('connected', False)}\n"
-                            f"Authenticated: {results.get('authenticated', False)}"
-                        ),
+                        "message": "\n".join(details),
                         "title": "BLE Ring Test: FAILED",
                         "notification_id": "life360_ble_ring_test",
                     },

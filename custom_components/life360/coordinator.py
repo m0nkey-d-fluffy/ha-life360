@@ -122,6 +122,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self._tile_auth_cache: dict[str, bytes] = {}
         # Cache for Tile BLE device IDs (Life360 device ID -> BLE device ID)
         self._tile_ble_id_cache: dict[str, str] = {}
+        # Cache for Tile MAC addresses (Tile BLE ID -> MAC address)
+        self._tile_mac_cache: dict[str, str] = {}
         # Cache for device names (Life360 device ID -> name)
         self._device_name_cache: dict[str, str] = {}
         # Cache for device avatars (Life360 device ID -> avatar URL)
@@ -197,6 +199,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 auth_key_str = tile_info.get("auth_key")
                 tile_uuid = tile_info.get("tile_uuid")
                 tile_name = tile_info.get("name", f"Tile {tile_id[:8]}")
+                mac_address = tile_info.get("mac_address")
 
                 if auth_key_str:
                     # Tile API returns auth_key as base64 string, convert to bytes
@@ -219,6 +222,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                         # Cache the BLE device ID
                         self._tile_ble_id_cache[tile_id] = tile_id
+
+                        # Cache MAC address if available
+                        if mac_address:
+                            self._tile_mac_cache[tile_id] = mac_address
+                            _LOGGER.info(
+                                "✅ Cached MAC address from Tile API: %s -> %s",
+                                tile_name,
+                                mac_address,
+                            )
 
                         _LOGGER.info(
                             "✅ Cached Tile BLE auth key: %s (id=%s, %d bytes)",
@@ -1788,6 +1800,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     # =========================================================================
                     _LOGGER.debug("Processing %d items from metadata response", len(items))
                     for item in items:
+                        # Log all available fields to find MAC addresses
+                        _LOGGER.info("🔍 v6 API item fields: %s", list(item.keys()))
+                        _LOGGER.debug("Full v6 API item: %s", item)
+
                         item_type = item.get("type", "device")
 
                         # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
@@ -1837,8 +1853,28 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                         # Handle Auth Key (for BLE)
                         type_data = item.get("typeData") or item.get("type_data") or {}
+
+                        # Log all typeData fields to find MAC addresses
+                        if type_data:
+                            _LOGGER.info("📍 v6 API typeData fields for %s: %s",
+                                        name or device_id, list(type_data.keys()))
+                            _LOGGER.debug("Full typeData for %s: %s", device_id, type_data)
+
                         tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
                         auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
+
+                        # Check for MAC address in typeData
+                        mac_address = (
+                            type_data.get("macAddress") or
+                            type_data.get("mac_address") or
+                            type_data.get("bleAddress") or
+                            type_data.get("ble_address") or
+                            type_data.get("hardwareAddress") or
+                            type_data.get("hardware_address") or
+                            type_data.get("address")
+                        )
+                        if mac_address:
+                            _LOGGER.info("✅ Found MAC address in v6 API for %s: %s", name or device_id, mac_address)
 
                         if tile_device_id and auth_key_b64:
                             try:
@@ -1848,6 +1884,16 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                 # Also cache by BLE device ID for lookup
                                 self._tile_auth_cache[tile_device_id] = auth_key
                                 self._tile_ble_id_cache[tile_device_id] = tile_device_id
+
+                                # Cache MAC address if available
+                                if mac_address:
+                                    self._tile_mac_cache[tile_device_id] = mac_address
+                                    _LOGGER.info(
+                                        "✅ Cached MAC address from v6 API: %s -> %s",
+                                        name or device_id,
+                                        mac_address,
+                                    )
+
                                 _LOGGER.info(
                                     "✓ Cached BLE auth from v6 API: %s -> %s (%d bytes)",
                                     name or device_id, tile_device_id[:8], len(auth_key)

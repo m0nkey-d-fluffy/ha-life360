@@ -165,13 +165,17 @@ class TileBleClient:
         _LOGGER.debug("Normalized expected MAC for matching: %s", expected_mac_lower)
 
         found_device = None
+        devices_seen = []
 
         def detection_callback(device: BLEDevice, advertisement_data):
             """Callback for each detected BLE device."""
             nonlocal found_device
 
-            _LOGGER.debug(
-                "📡 BLE device detected: name=%s, address=%s, rssi=%s",
+            devices_seen.append(device.address)
+
+            # Log ALL devices in diagnostic mode
+            _LOGGER.warning(
+                "🔧 BLE device detected: name=%s, address=%s, rssi=%s",
                 device.name or "N/A",
                 device.address,
                 advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A'
@@ -200,14 +204,20 @@ class TileBleClient:
                 found_device = device
 
         try:
+            # DIAGNOSTIC: Temporarily scan ALL BLE devices (no service UUID filter)
+            _LOGGER.warning("🔧 DIAGNOSTIC MODE: Scanning ALL BLE devices (no filter)")
             scanner = BleakScanner(
                 detection_callback=detection_callback,
-                service_uuids=[TILE_SERVICE_UUID],
+                # service_uuids=[TILE_SERVICE_UUID],  # Temporarily disabled for diagnostics
             )
 
             await scanner.start()
             await asyncio.sleep(scan_timeout)
             await scanner.stop()
+
+            _LOGGER.warning("🔧 DIAGNOSTIC: Scan complete - detected %d BLE devices total", len(devices_seen))
+            if devices_seen:
+                _LOGGER.warning("🔧 Devices found: %s", ", ".join(devices_seen))
 
             if found_device:
                 _LOGGER.info("✅ Successfully located Tile device!")
@@ -217,6 +227,7 @@ class TileBleClient:
             _LOGGER.warning("❌ Tile %s not found in BLE range", self.tile_id)
             _LOGGER.warning("   Expected MAC: %s", expected_mac)
             _LOGGER.warning("   If the Tile is nearby, it may be out of range or sleeping")
+            _LOGGER.error("🔧 DIAGNOSTIC: No devices found at all - BLE adapter may not be working!")
             return None
 
         except Exception as err:

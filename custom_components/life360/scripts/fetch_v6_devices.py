@@ -45,10 +45,6 @@ async def establish_session(session, bearer_token, device_id, circle_id):
     # Strip "Bearer " prefix if present (coordinator passes full "Bearer xxx" value)
     token = bearer_token.removeprefix("Bearer ").strip()
 
-    print("\n" + "="*80, file=sys.stderr)
-    print("ESTABLISHING SESSION", file=sys.stderr)
-    print("="*80, file=sys.stderr)
-
     def get_headers(ce_type):
         """Generate CloudEvents headers for API requests."""
         ce_id = str(uuid.uuid4())
@@ -69,34 +65,26 @@ async def establish_session(session, bearer_token, device_id, circle_id):
         }
 
     # Step 1: Call /v4/circles/{id}/members to get session cookies
-    print(f"\n1. Calling /v4/circles/{circle_id}/members...", file=sys.stderr)
     try:
         members_url = f"{API_BASE}/v4/circles/{circle_id}/members"
-        resp = await session.get(members_url, headers=get_headers("com.life360.circle.members.v1"))
-        print(f"   Response: {resp.status_code}", file=sys.stderr)
-        print(f"   Cookies received: {len(session.cookies)}", file=sys.stderr)
-    except Exception as e:
-        print(f"   Error: {e}", file=sys.stderr)
+        await session.get(members_url, headers=get_headers("com.life360.circle.members.v1"))
+    except Exception:
+        pass  # Non-critical, continue anyway
 
     await asyncio.sleep(0.5)
 
     # Step 2: Call /v5/circles/devices/locations (optional, may 403 but still helps)
-    print(f"\n2. Calling /v5/circles/devices/locations...", file=sys.stderr)
     try:
         locations_url = f"{API_BASE}/v5/circles/devices/locations"
-        resp = await session.get(
+        await session.get(
             locations_url,
             headers=get_headers("com.life360.cloud.platform.devices.locations.v1"),
             params={"circleId": circle_id}
         )
-        print(f"   Response: {resp.status_code}", file=sys.stderr)
-        print(f"   Cookies in session: {len(session.cookies)}", file=sys.stderr)
-    except Exception as e:
-        print(f"   Error: {e}", file=sys.stderr)
+    except Exception:
+        pass  # Non-critical, continue anyway
 
     await asyncio.sleep(0.5)
-    print(f"\n✓ Session established (total cookies: {len(session.cookies)})", file=sys.stderr)
-    print("="*80, file=sys.stderr)
 
 
 async def fetch_devices(bearer_token, device_id, circle_id):
@@ -133,51 +121,16 @@ async def fetch_devices(bearer_token, device_id, circle_id):
 
             # Now call v6/devices
             v6_url = f"{API_BASE}/v6/devices"
-
-            # Log full request details for debugging
-            print("="*80, file=sys.stderr)
-            print("v6 API REQUEST DETAILS", file=sys.stderr)
-            print("="*80, file=sys.stderr)
-            print(f"URL: {v6_url}", file=sys.stderr)
-            print(f"Method: GET", file=sys.stderr)
-            print(f"TLS Impersonation: chrome110", file=sys.stderr)
-            print(f"Session cookies: {len(session.cookies)} cookies", file=sys.stderr)
-            print(f"\nQuery Parameters:", file=sys.stderr)
-            for key, value in params.items():
-                print(f"  {key}: {value}", file=sys.stderr)
-            print(f"\nHeaders:", file=sys.stderr)
-            for key, value in headers.items():
-                if key.lower() == "authorization":
-                    print(f"  {key}: Bearer {value[7:37]}... (length: {len(value)})", file=sys.stderr)
-                else:
-                    print(f"  {key}: {value}", file=sys.stderr)
-            print("="*80, file=sys.stderr)
-
             response = await session.get(v6_url, headers=headers, params=params)
-
-            # Log response details
-            print(f"\nRESPONSE: {response.status_code}", file=sys.stderr)
-            print(f"Response headers count: {len(response.headers)}", file=sys.stderr)
             if response.status_code == 200:
                 data = json.loads(response.text)
                 return data
             else:
-                # Log more details for 401 errors
+                # Log error
                 error_msg = f"ERROR: API returned {response.status_code}"
                 if response.text:
                     error_msg += f": {response.text[:200]}"
-                else:
-                    error_msg += " (no response body)"
-
-                # Add authentication debugging for 401 errors
-                if response.status_code == 401:
-                    print(f"{error_msg}", file=sys.stderr)
-                    print(f"DEBUG: Bearer token length: {len(bearer_token) if bearer_token else 0}", file=sys.stderr)
-                    print(f"DEBUG: Device ID: {device_id[:20] if device_id else 'None'}", file=sys.stderr)
-                    print(f"DEBUG: Circle ID: {circle_id[:20] if circle_id else 'None'}", file=sys.stderr)
-                else:
-                    print(error_msg, file=sys.stderr)
-
+                print(error_msg, file=sys.stderr)
                 return None
 
     except Exception as e:

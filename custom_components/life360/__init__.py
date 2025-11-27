@@ -374,8 +374,8 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         try:
             from .tile_ble import discover_and_verify_tile_macs
 
-            # Run the diagnostic scan
-            mac_to_id_map = await discover_and_verify_tile_macs(scan_timeout=15.0)
+            # Run the diagnostic scan with HA Bluetooth backend
+            mac_to_id_map = await discover_and_verify_tile_macs(scan_timeout=15.0, hass=hass)
 
             result = {
                 "tiles_found": len(mac_to_id_map),

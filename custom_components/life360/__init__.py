@@ -481,6 +481,26 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_RING_ALL_BLE, diagnose_ring_all_ble)
 
+    async def diagnose_raw_scan(call: ServiceCall) -> dict:
+        """Direct BLE scan bypassing HA's Bluetooth backend to see raw advertisement data."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔬 Service diagnose_raw_ble_scan called - direct BLE scan")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_raw_ble_scan
+
+            scan_timeout = call.data.get("scan_timeout", 30.0)
+            results = await diagnose_raw_ble_scan(scan_timeout=scan_timeout)
+
+            return results
+
+        except Exception as err:
+            _LOGGER.error("❌ Raw BLE scan failed: %s", err, exc_info=True)
+            return {"total_devices": 0, "tiles_found": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, "diagnose_raw_ble_scan", diagnose_raw_scan)
+
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.
 

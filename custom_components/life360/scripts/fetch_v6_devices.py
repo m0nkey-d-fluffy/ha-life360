@@ -47,23 +47,19 @@ async def establish_session(session, bearer_token, device_id, circle_id):
         ce_id = str(uuid.uuid4())
         ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
-        headers = {
+        return {
             "Accept": "application/json",
             "Accept-Language": "en_AU",
             "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
             "Authorization": f"Bearer {bearer_token}",
+            "x-device-id": device_id,
             "ce-specversion": "1.0",
             "ce-type": ce_type,
             "ce-id": ce_id,
             "ce-time": ce_time,
+            "ce-source": f"/ANDROID/12/samsung-SM-N920I/{device_id}",
             "Accept-Encoding": "gzip",
         }
-
-        if device_id:
-            headers["x-device-id"] = device_id
-            headers["ce-source"] = f"/ANDROID/12/samsung-SM-N920I/{device_id}"
-
-        return headers
 
     # Step 1: Call /v4/circles/{id}/members to get session cookies
     try:
@@ -115,8 +111,7 @@ async def fetch_devices(bearer_token, device_id, circle_id):
         # Use curl_cffi with Android Chrome impersonation
         async with AsyncSession(impersonate="chrome110") as session:
             # Establish session first (mimics mobile app)
-            if circle_id:
-                await establish_session(session, bearer_token, device_id, circle_id)
+            await establish_session(session, bearer_token, device_id, circle_id)
 
             # Now call v6/devices
             v6_url = f"{API_BASE}/v6/devices"

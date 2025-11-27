@@ -274,4 +274,4 @@ These tools are only for:
 ### If you found bugs:
 1. Run test scripts to isolate the issue
 2. Capture output and logs
-3. Report at: https://github.com/pnbruckner/ha-life360/issues
+3. Report at: https://github.com/m0nkey-d-fluffy/ha-life360/issues

@@ -27,5 +27,5 @@ Welcome to the Life360 Home Assistant integration documentation.
 
 ## Support
 
-- **Issues:** [GitHub Issues](https://github.com/pnbruckner/ha-life360/issues)
-- **Discussions:** [GitHub Discussions](https://github.com/pnbruckner/ha-life360/discussions)
+- **Issues:** [GitHub Issues](https://github.com/m0nkey-d-fluffy/ha-life360/issues)
+- **Discussions:** [GitHub Discussions](https://github.com/m0nkey-d-fluffy/ha-life360/discussions)

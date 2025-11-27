@@ -1,11 +1,11 @@
 {
   "domain": "life360",
   "name": "Life360",
-  "codeowners": ["@pnbruckner"],
+  "codeowners": ["@m0nkey-d-fluffy"],
   "config_flow": true,
-  "documentation": "https://github.com/pnbruckner/ha-life360/blob/master/README.md",
+  "documentation": "https://github.com/m0nkey-d-fluffy/ha-life360/blob/master/README.md",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/pnbruckner/ha-life360/issues",
+  "issue_tracker": "https://github.com/m0nkey-d-fluffy/ha-life360/issues",
   "loggers": ["life360"],
   "requirements": ["life360==7.0.1", "bleak>=0.21.0", "curl_cffi>=0.5.0"],
   "bluetooth": [

@@ -13,7 +13,7 @@ Thank you for your interest in contributing to the Life360 Home Assistant integr
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/pnbruckner/ha-life360.git
+   git clone https://github.com/m0nkey-d-fluffy/ha-life360.git
    cd ha-life360
    ```
 
@@ -121,5 +121,5 @@ If you discover new Life360 API endpoints while contributing:
 
 ## Questions?
 
-- Check existing [issues](https://github.com/pnbruckner/ha-life360/issues)
+- Check existing [issues](https://github.com/m0nkey-d-fluffy/ha-life360/issues)
 - Ask in the [Home Assistant Community Forum](https://community.home-assistant.io/)

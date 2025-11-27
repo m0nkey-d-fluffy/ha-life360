@@ -12,7 +12,7 @@ A [Home Assistant](https://www.home-assistant.io/) integration for Life360.
 
 ## Documentation
 
-- [Full Documentation](https://github.com/pnbruckner/ha-life360/blob/master/README.md)
-- [Obtaining Tokens](https://github.com/pnbruckner/ha-life360/blob/master/docs/obtaining-tokens.md)
-- [Tile & Device Support](https://github.com/pnbruckner/ha-life360/blob/master/docs/tiles-and-devices.md)
-- [API Reference](https://github.com/pnbruckner/ha-life360/blob/master/docs/api_endpoints.md)
+- [Full Documentation](https://github.com/m0nkey-d-fluffy/ha-life360/blob/master/README.md)
+- [Obtaining Tokens](https://github.com/m0nkey-d-fluffy/ha-life360/blob/master/docs/obtaining-tokens.md)
+- [Tile & Device Support](https://github.com/m0nkey-d-fluffy/ha-life360/blob/master/docs/tiles-and-devices.md)
+- [API Reference](https://github.com/m0nkey-d-fluffy/ha-life360/blob/master/docs/api_endpoints.md)

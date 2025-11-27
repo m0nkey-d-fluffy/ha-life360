@@ -157,9 +157,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         This is called during coordinator setup to populate the Tile auth cache.
         The cache is used for BLE ringing functionality.
         """
+        _LOGGER.info("🔧 fetch_tile_auth_keys() called - checking Tile credentials...")
+        _LOGGER.debug("Tile email configured: %s", bool(self._options.tile_email))
+        _LOGGER.debug("Tile password configured: %s", bool(self._options.tile_password))
+
         # Check if Tile credentials are configured
         if not self._options.tile_email or not self._options.tile_password:
-            _LOGGER.debug("No Tile credentials configured - skipping Tile BLE auth fetch")
+            _LOGGER.info("⚠️ No Tile credentials configured - skipping Tile BLE auth fetch")
             return
 
         _LOGGER.info("Authenticating to Tile API to fetch BLE auth keys...")

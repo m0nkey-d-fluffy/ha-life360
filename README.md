@@ -435,10 +435,82 @@ Shows your Life360 account information:
 
 Retrieves all connected integrations/apps from your Life360 account. Returns information about linked services like Tile, Jiobit, etc.
 
-### `life360.buzz_jiobit`
+### Tile & Jiobit Device Services
+
+#### `life360.get_devices`
+
+Retrieves all Tile/Jiobit devices and Life360 circles with their IDs. Use this to find device IDs and circle IDs needed for other services.
+
+```yaml
+service: life360.get_devices
+```
+
+Returns information including:
+- Device names and IDs
+- Device categories (Tile, Jiobit, etc.)
+- BLE capabilities
+- All circle IDs
+
+The data is returned as service response data and also fired as a `life360_devices` event.
+
+#### `life360.ring_device`
+
+Ring or buzz a Tile or Jiobit device to help locate it. The device will emit a sound for the specified duration.
+
+**Easy method (recommended):**
+```yaml
+service: life360.ring_device
+data:
+  entity_id: device_tracker.tile_keys
+  duration: 30  # seconds (1-300)
+  strength: 2   # 1=low, 2=medium, 3=high
+```
+
+**Advanced method:**
+```yaml
+service: life360.ring_device
+data:
+  device_id: "abc123"
+  circle_id: "abc123-def456"
+  provider: "tile"  # or "jiobit"
+  duration: 30
+  strength: 2
+```
+
+> **Tip:** Use `entity_id` for simplicity - it automatically determines the device_id, circle_id, and provider!
+
+#### `life360.stop_ring_device`
+
+Stop ringing/buzzing a Tile or Jiobit device that is currently ringing.
+
+**Easy method (recommended):**
+```yaml
+service: life360.stop_ring_device
+data:
+  entity_id: device_tracker.tile_keys
+```
+
+**Advanced method:**
+```yaml
+service: life360.stop_ring_device
+data:
+  device_id: "abc123"
+  circle_id: "abc123-def456"
+  provider: "tile"  # or "jiobit"
+```
+
+#### `life360.buzz_jiobit`
 
 Sends a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound.
 
+**Easy method (recommended):**
+```yaml
+service: life360.buzz_jiobit
+data:
+  entity_id: device_tracker.jiobit_fluffy
+```
+
+**Advanced method:**
 ```yaml
 service: life360.buzz_jiobit
 data:
@@ -446,7 +518,77 @@ data:
   circle_id: "abc123-def456"
 ```
 
-> **Note:** The device_id and circle_id can be found in the device tracker entity attributes.
+> **Note:** The device_id and circle_id can be found in the device tracker entity attributes, or use the `life360.get_devices` service to list all devices.
+
+#### `life360.toggle_light`
+
+Toggle the LED light on a Jiobit device. Useful for visual identification.
+
+```yaml
+service: life360.toggle_light
+data:
+  device_id: "dr123456"
+  circle_id: "abc123-def456"
+  provider: "jiobit"
+  enable: true  # true=on, false=off
+```
+
+---
+
+### Example Automations for Tile/Jiobit Devices
+
+**Ring your keys when you leave home:**
+```yaml
+automation:
+  - alias: "Ring Keys on Departure"
+    trigger:
+      - platform: state
+        entity_id: person.you
+        from: "home"
+    action:
+      - service: life360.ring_device
+        data:
+          entity_id: device_tracker.tile_keys
+          duration: 10
+          strength: 3
+```
+
+**Alert when Tile battery is low:**
+```yaml
+automation:
+  - alias: "Tile Low Battery Alert"
+    trigger:
+      - platform: numeric_state
+        entity_id: device_tracker.tile_wallet
+        attribute: battery_level
+        below: 20
+    action:
+      - service: notify.mobile_app
+        data:
+          title: "Tile Battery Low"
+          message: "Wallet Tile battery is at {{ state_attr('device_tracker.tile_wallet', 'battery_level') }}%"
+```
+
+**Flash Jiobit light when pet leaves yard:**
+```yaml
+automation:
+  - alias: "Pet Left Yard"
+    trigger:
+      - platform: zone
+        entity_id: device_tracker.jiobit_fluffy
+        zone: zone.backyard
+        event: leave
+    action:
+      - service: life360.toggle_light
+        data:
+          entity_id: device_tracker.jiobit_fluffy
+          enable: true
+      - delay: "00:00:05"
+      - service: life360.toggle_light
+        data:
+          entity_id: device_tracker.jiobit_fluffy
+          enable: false
+```
 
 ## Troubleshooting
 

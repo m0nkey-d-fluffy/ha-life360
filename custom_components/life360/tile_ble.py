@@ -236,15 +236,37 @@ class TileBleClient:
                     found_device = device
 
         try:
-            # DIAGNOSTIC: Temporarily scan ALL BLE devices (no service UUID filter)
-            _LOGGER.warning("🔧 DIAGNOSTIC MODE: Scanning ALL BLE devices (no filter)")
+            # DIAGNOSTIC: Persistent scan - stop as soon as target found
+            _LOGGER.warning("🔧 DIAGNOSTIC MODE: Persistent scan (up to %.0f seconds)", scan_timeout)
+            _LOGGER.warning("🔧 Will connect immediately when Tile is detected")
+
             scanner = BleakScanner(
                 detection_callback=detection_callback,
                 # service_uuids=[TILE_SERVICE_UUID],  # Temporarily disabled for diagnostics
             )
 
             await scanner.start()
-            await asyncio.sleep(scan_timeout)
+
+            # Persistent scan: check every 0.5 seconds if we found the device
+            start_time = asyncio.get_event_loop().time()
+            check_interval = 0.5  # Check twice per second
+
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                # If we found the target device, stop immediately!
+                if found_device:
+                    _LOGGER.warning("✅ Target found at %.1fs - stopping scan early!", elapsed)
+                    break
+
+                # If we've exceeded the timeout, give up
+                if elapsed >= scan_timeout:
+                    _LOGGER.warning("⏱️ Scan timeout reached after %.0fs", scan_timeout)
+                    break
+
+                # Wait a bit before checking again
+                await asyncio.sleep(check_interval)
+
             await scanner.stop()
 
             _LOGGER.warning("🔧 DIAGNOSTIC: Scan complete - detected %d BLE devices total", len(devices_seen))
@@ -256,10 +278,11 @@ class TileBleClient:
                 self._device = found_device
                 return found_device
 
-            _LOGGER.warning("❌ Tile %s not found in BLE range", self.tile_id)
+            _LOGGER.warning("❌ Tile %s not found in BLE range after %.0fs", self.tile_id, scan_timeout)
             _LOGGER.warning("   Expected MAC: %s", expected_mac)
             _LOGGER.warning("   If the Tile is nearby, it may be out of range or sleeping")
-            _LOGGER.error("🔧 DIAGNOSTIC: No devices found at all - BLE adapter may not be working!")
+            if not devices_seen:
+                _LOGGER.error("🔧 DIAGNOSTIC: No devices found at all - BLE adapter may not be working!")
             return None
 
         except Exception as err:
@@ -1054,15 +1077,18 @@ async def diagnose_ring_tile_by_mac(
     mac_address: str,
     tile_id: str,
     auth_key: bytes,
+    scan_timeout: float = 120.0,
 ) -> dict[str, Any]:
     """Test ringing a specific Tile by MAC address.
 
     This diagnostic connects directly to a known MAC and attempts to ring it.
+    Uses persistent scanning that stops as soon as the Tile is found.
 
     Args:
         mac_address: The MAC address to connect to
         tile_id: The Tile device ID (for logging)
         auth_key: The authentication key
+        scan_timeout: Max seconds to scan for Tile (default 120s = 2 min)
 
     Returns:
         Dictionary with test results
@@ -1077,10 +1103,11 @@ async def diagnose_ring_tile_by_mac(
     _LOGGER.warning("   Target MAC: %s", mac_address)
     _LOGGER.warning("   Tile ID: %s", tile_id)
     _LOGGER.warning("   Auth key length: %d bytes", len(auth_key))
+    _LOGGER.warning("   Scan timeout: %.0f seconds (will stop early if found)", scan_timeout)
 
     try:
         # Create Tile BLE client with the Tile ID (not MAC address!)
-        client = TileBleClient(tile_id, auth_key, timeout=30.0)
+        client = TileBleClient(tile_id, auth_key, timeout=scan_timeout)
 
         _LOGGER.warning("🔌 Connecting to Tile...")
         _LOGGER.warning("   Scanning for device...")

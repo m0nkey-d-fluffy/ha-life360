@@ -52,7 +52,7 @@ diagnose_raw_ble_scan:
 
 diagnose_ring_tile_by_mac:
   name: Test Ring Tile by MAC
-  description: "DIAGNOSTIC: Directly connects to a Tile at a specific MAC address and attempts to ring it. Use this to test BLE ring functionality for Tiles that were found in the raw scan. You'll need the MAC address and Tile ID."
+  description: "DIAGNOSTIC: Directly connects to a Tile at a specific MAC address and attempts to ring it. Uses persistent scanning that stops as soon as the Tile is found. You'll need the MAC address and Tile ID."
   fields:
     mac_address:
       name: MAC Address
@@ -68,6 +68,17 @@ diagnose_ring_tile_by_mac:
       example: "03a757b8479cbdfc"
       selector:
         text:
+    scan_timeout:
+      name: Scan Timeout
+      description: Maximum seconds to scan for Tile (default 120s, stops early when found)
+      required: false
+      default: 120
+      example: 600
+      selector:
+        number:
+          min: 30
+          max: 600
+          unit_of_measurement: seconds
 
 diagnose_list_tiles:
   name: List All Tiles

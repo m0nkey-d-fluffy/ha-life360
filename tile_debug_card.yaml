@@ -1,0 +1,64 @@
+# Tile BLE Diagnostic Card
+# Add this to your Lovelace dashboard to test all Tile devices
+
+type: vertical-stack
+cards:
+  - type: markdown
+    content: |
+      ## 🔔 Tile BLE Diagnostic
+
+      Below are all your Tiles with their derived MAC addresses.
+      Press the ring button for each to test BLE connectivity.
+
+      **Expected MAC Addresses:**
+      - **Upstairs TV**: `EF:B8:09:80:8F:7F` (ID: `6fb809808f7f1309`)
+      - **Wallet**: `C3:A7:57:B8:47:9C` (ID: `03a757b8479cbdfc`)
+      - **Keys (Royal)**: `ED:87:F0:61:85:1B` (ID: `ed87f061851b0d6f`)
+      - **Keys (Quaid)**: `ED:40:82:FE:9F:5E` (ID: `6d4082fe9f5e8451`)
+      - **Cat**: `F4:24:9D:26:A9:FD` (ID: `74249d26a9fdabe9`)
+
+      ✅ Working = Tile found via BLE and rang
+      ⚠️ Failed = Fell back to API (Tile not in BLE range)
+
+  - type: entities
+    title: Ring All Tiles
+    entities:
+      - entity: device_tracker.life360_upstairs_tv
+        name: "🔔 Ring: Upstairs TV"
+        tap_action:
+          action: call-service
+          service: life360.ring_device
+          service_data:
+            entity_id: device_tracker.life360_upstairs_tv
+
+      - entity: device_tracker.life360_wallet
+        name: "🔔 Ring: Wallet"
+        tap_action:
+          action: call-service
+          service: life360.ring_device
+          service_data:
+            entity_id: device_tracker.life360_wallet
+
+      - entity: device_tracker.life360_keys
+        name: "🔔 Ring: Keys (Royal)"
+        tap_action:
+          action: call-service
+          service: life360.ring_device
+          service_data:
+            entity_id: device_tracker.life360_keys
+
+      - entity: device_tracker.life360_keys_2
+        name: "🔔 Ring: Keys (Quaid)"
+        tap_action:
+          action: call-service
+          service: life360.ring_device
+          service_data:
+            entity_id: device_tracker.life360_keys_2
+
+      - entity: device_tracker.life360_cat
+        name: "🔔 Ring: Cat"
+        tap_action:
+          action: call-service
+          service: life360.ring_device
+          service_data:
+            entity_id: device_tracker.life360_cat

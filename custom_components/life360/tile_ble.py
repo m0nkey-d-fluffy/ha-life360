@@ -178,13 +178,24 @@ class TileBleClient:
 
             # Log ALL devices in diagnostic mode
             _LOGGER.warning(
-                "🔧 BLE device detected: name=%s, address=%s, rssi=%s",
+                "🔧 BLE device detected: name=%s, address=%s, rssi=%s, service_uuids=%s",
                 device.name or "N/A",
                 device.address,
-                advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A'
+                advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A',
+                list(advertisement_data.service_uuids) if advertisement_data.service_uuids else "None"
             )
 
-            # Check by derived MAC address (primary method)
+            # PRIMARY: Check if device advertises Tile service UUID
+            if advertisement_data.service_uuids and TILE_SERVICE_UUID in advertisement_data.service_uuids:
+                _LOGGER.warning("✅ FOUND TILE BY SERVICE UUID at %s!", device.address)
+                _LOGGER.warning("   Service UUID: %s", TILE_SERVICE_UUID)
+                _LOGGER.warning("   MAC: %s", device.address)
+                _LOGGER.warning("   Expected MAC from derivation: %s", expected_mac)
+                _LOGGER.warning("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+                found_device = device
+                return
+
+            # FALLBACK: Check by derived MAC address (less reliable due to MAC randomization)
             addr_normalized = device.address.lower().replace(":", "").replace("-", "")
             if addr_normalized == expected_mac_lower:
                 _LOGGER.info("✅ MATCH: Found Tile by derived MAC address!")

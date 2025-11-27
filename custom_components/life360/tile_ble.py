@@ -649,7 +649,10 @@ async def stop_ring_tile_ble(
         await client.disconnect()
 
 
-async def discover_and_verify_tile_macs(scan_timeout: float = 15.0) -> dict[str, str]:
+async def discover_and_verify_tile_macs(
+    scan_timeout: float = 15.0,
+    hass = None,
+) -> dict[str, str]:
     """Scan for all Tile devices and read their actual device IDs to verify MAC mappings.
 
     This is a diagnostic function to verify that our MAC derivation formula is correct.
@@ -657,6 +660,7 @@ async def discover_and_verify_tile_macs(scan_timeout: float = 15.0) -> dict[str,
 
     Args:
         scan_timeout: BLE scan timeout in seconds
+        hass: Home Assistant instance (optional, for using HA Bluetooth backend)
 
     Returns:
         Dictionary mapping MAC addresses to actual Tile IDs read from devices
@@ -672,31 +676,67 @@ async def discover_and_verify_tile_macs(scan_timeout: float = 15.0) -> dict[str,
     discovered_tiles = []
     mac_to_id_map = {}
 
-    def detection_callback(device: BLEDevice, advertisement_data):
-        """Callback for each detected BLE device."""
-        # Check if device advertises Tile service
-        service_uuids = advertisement_data.service_uuids if hasattr(advertisement_data, 'service_uuids') else []
+    # Use Home Assistant's Bluetooth backend if available
+    if hass is not None:
+        try:
+            from homeassistant.components import bluetooth
 
-        if TILE_SERVICE_UUID in service_uuids:
-            _LOGGER.warning("✅ Found Tile: %s at %s (RSSI: %s)",
-                          device.name or "Unknown",
-                          device.address,
-                          advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
-            discovered_tiles.append(device)
+            _LOGGER.warning("🔍 Using Home Assistant Bluetooth backend to find Tiles...")
+
+            # Get all devices from HA's Bluetooth backend
+            service_info_list = bluetooth.async_discovered_service_info(hass)
+
+            _LOGGER.warning("📡 HA Bluetooth backend sees %d devices total", len(service_info_list))
+
+            # Filter for Tiles
+            for service_info in service_info_list:
+                if TILE_SERVICE_UUID in service_info.service_uuids:
+                    _LOGGER.warning("✅ Found Tile: %s at %s (RSSI: %s)",
+                                  service_info.name or "Unknown",
+                                  service_info.address,
+                                  service_info.rssi)
+                    # Convert ServiceInfo to BLEDevice
+                    discovered_tiles.append(service_info.device)
+
+            _LOGGER.warning("🔍 Found %d Tile(s) from HA Bluetooth", len(discovered_tiles))
+
+        except Exception as err:
+            _LOGGER.error("❌ Failed to use HA Bluetooth backend: %s", err)
+            _LOGGER.warning("⚠️ Falling back to direct BleakScanner...")
+            hass = None  # Fall back to direct scanning
+
+    # Fallback: Direct BleakScanner if HA not available
+    if hass is None:
+        def detection_callback(device: BLEDevice, advertisement_data):
+            """Callback for each detected BLE device."""
+            # Check if device advertises Tile service
+            service_uuids = advertisement_data.service_uuids if hasattr(advertisement_data, 'service_uuids') else []
+
+            if TILE_SERVICE_UUID in service_uuids:
+                _LOGGER.warning("✅ Found Tile: %s at %s (RSSI: %s)",
+                              device.name or "Unknown",
+                              device.address,
+                              advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+                discovered_tiles.append(device)
+
+        try:
+            # Scan for Tiles
+            _LOGGER.warning("🔍 Scanning for Tile devices (filtering by service UUID)...")
+            scanner = BleakScanner(
+                detection_callback=detection_callback,
+                service_uuids=[TILE_SERVICE_UUID],
+            )
+
+            await scanner.start()
+            await asyncio.sleep(scan_timeout)
+            await scanner.stop()
+
+            _LOGGER.warning("🔍 Scan complete - found %d Tile(s)", len(discovered_tiles))
+        except Exception as scan_err:
+            _LOGGER.error("❌ Scan failed: %s", scan_err)
+            discovered_tiles = []
 
     try:
-        # Scan for Tiles
-        _LOGGER.warning("🔍 Scanning for Tile devices (filtering by service UUID)...")
-        scanner = BleakScanner(
-            detection_callback=detection_callback,
-            service_uuids=[TILE_SERVICE_UUID],
-        )
-
-        await scanner.start()
-        await asyncio.sleep(scan_timeout)
-        await scanner.stop()
-
-        _LOGGER.warning("🔍 Scan complete - found %d Tile(s)", len(discovered_tiles))
 
         if not discovered_tiles:
             _LOGGER.warning("⚠️  No Tiles found in range - make sure they're nearby and awake")
@@ -710,8 +750,20 @@ async def discover_and_verify_tile_macs(scan_timeout: float = 15.0) -> dict[str,
 
             client = None
             try:
-                client = BleakClient(device, timeout=30.0)
-                await asyncio.wait_for(client.connect(), timeout=30.0)
+                # Use bleak-retry-connector for reliable connections with HA Bluetooth
+                if hass is not None:
+                    _LOGGER.warning("🔌 Using bleak-retry-connector with HA Bluetooth backend...")
+                    client = await establish_connection(
+                        BleakClientWithServiceCache,
+                        device,
+                        device.name or device.address,
+                        disconnected_callback=lambda _: None,
+                        max_attempts=3,
+                    )
+                else:
+                    _LOGGER.warning("🔌 Using direct BleakClient connection...")
+                    client = BleakClient(device, timeout=30.0)
+                    await asyncio.wait_for(client.connect(), timeout=30.0)
 
                 if not client.is_connected:
                     _LOGGER.error("❌ Failed to connect to %s", device.address)

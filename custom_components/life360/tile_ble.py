@@ -853,3 +853,155 @@ async def discover_and_verify_tile_macs(
     except Exception as err:
         _LOGGER.error("❌ Diagnostic scan failed: %s", err, exc_info=True)
         return {}
+
+
+async def diagnose_ring_all_ble_devices(
+    hass,
+    auth_keys: dict[str, bytes],
+) -> dict[str, str]:
+    """Try to ring ALL BLE devices to find which ones are Tiles.
+
+    This is a brute-force diagnostic that attempts to connect and ring every
+    BLE device seen by Home Assistant to discover which MACs are actually Tiles.
+
+    Args:
+        hass: Home Assistant instance
+        auth_keys: Dict mapping Tile IDs to auth keys from API
+
+    Returns:
+        Dictionary mapping MAC addresses to results (success/failure)
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔥 DIAGNOSTIC: Trying to ring EVERY BLE device!")
+    _LOGGER.warning("⚠️  WARNING: This will attempt connections to ALL nearby devices")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    from homeassistant.components import bluetooth
+
+    # Get all devices from HA's Bluetooth backend
+    service_info_list = bluetooth.async_discovered_service_info(hass)
+
+    _LOGGER.warning("📡 Found %d BLE devices total", len(service_info_list))
+
+    results = {}
+
+    # Pick the first auth key to try (we don't know which Tile is which yet)
+    if not auth_keys:
+        _LOGGER.error("❌ No auth keys provided - cannot authenticate with Tiles")
+        return {}
+
+    # Try each auth key
+    for tile_id, auth_key in auth_keys.items():
+        _LOGGER.warning("🔑 Using auth key for Tile ID: %s", tile_id)
+
+        # Try each device
+        for idx, service_info in enumerate(service_info_list, 1):
+            device = service_info.device
+            _LOGGER.warning("─────────────────────────────────────────────────────────")
+            _LOGGER.warning("📱 %d/%d: Testing %s (%s)",
+                          idx, len(service_info_list),
+                          service_info.name or "Unknown",
+                          device.address)
+
+            client = None
+            try:
+                # Try to connect
+                _LOGGER.warning("   🔌 Connecting...")
+                client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    device,
+                    device.name or device.address,
+                    disconnected_callback=lambda _: None,
+                    max_attempts=1,  # Only 1 attempt to keep it fast
+                    timeout=10.0,
+                )
+
+                if not client.is_connected:
+                    _LOGGER.warning("   ❌ Connection failed")
+                    results[device.address] = "connection_failed"
+                    continue
+
+                _LOGGER.warning("   ✅ Connected!")
+
+                # Try to subscribe to Tile response characteristic
+                try:
+                    response_data = None
+
+                    def response_handler(sender, data):
+                        nonlocal response_data
+                        response_data = data
+
+                    await client.start_notify(MEP_RESPONSE_CHAR_UUID, response_handler)
+                    _LOGGER.warning("   ✅ Subscribed to Tile response characteristic")
+
+                    # Try authentication
+                    _LOGGER.warning("   🔐 Attempting Tile authentication...")
+                    rand_a = os.urandom(8)
+                    auth_cmd = bytes([ToaCommand.AUTH]) + rand_a
+                    await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, auth_cmd)
+
+                    # Wait for response
+                    await asyncio.sleep(1.0)
+
+                    if response_data and len(response_data) >= 17:
+                        _LOGGER.warning("   ✅ Got Tile auth response! THIS IS A TILE!")
+                        _LOGGER.warning("   🎉 FOUND TILE AT: %s", device.address)
+
+                        # Try to ring it
+                        rand_t = response_data[1:9]
+                        sres_t = response_data[9:17]
+
+                        # Compute our response
+                        msg = rand_a + rand_t
+                        h = hmac.new(auth_key, msg, hashlib.sha256)
+                        sres_a = h.digest()[:8]
+
+                        # Send our sres
+                        ack_cmd = bytes([ToaCommand.AUTH]) + sres_a
+                        await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, ack_cmd)
+                        await asyncio.sleep(0.5)
+
+                        # Send ring command
+                        _LOGGER.warning("   🔔 Sending ring command...")
+                        ring_cmd = bytes([ToaCommand.SONG, SongType.RING, 1, 3, 10])
+                        await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, ring_cmd)
+
+                        _LOGGER.warning("   ✅ Ring command sent! Listen for the Tile!")
+                        results[device.address] = f"SUCCESS_TILE_{tile_id}"
+
+                    else:
+                        _LOGGER.warning("   ❌ No Tile response - not a Tile")
+                        results[device.address] = "not_a_tile"
+
+                except Exception as char_err:
+                    _LOGGER.warning("   ❌ Not a Tile (no characteristic): %s", str(char_err)[:50])
+                    results[device.address] = "not_a_tile"
+
+            except asyncio.TimeoutError:
+                _LOGGER.warning("   ⏱️  Timeout")
+                results[device.address] = "timeout"
+            except Exception as err:
+                _LOGGER.warning("   ❌ Error: %s", str(err)[:50])
+                results[device.address] = f"error: {str(err)[:30]}"
+            finally:
+                if client and client.is_connected:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("📊 RING ALL RESULTS:")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    for mac, result in results.items():
+        if "SUCCESS" in result:
+            _LOGGER.warning("🎉 %s → %s", mac, result)
+        else:
+            _LOGGER.warning("   %s → %s", mac, result)
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    return results

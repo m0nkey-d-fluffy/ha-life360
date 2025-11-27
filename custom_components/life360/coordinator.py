@@ -680,7 +680,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                                 # Also cache by BLE device ID
                                                 self._tile_auth_cache[tile_device_id] = auth_key
                                                 self._tile_ble_id_cache[tile_device_id] = tile_device_id
-                                                _LOGGER.info(
+                                                _LOGGER.debug(
                                                     "✓ Cached BLE auth from v5 locations: %s -> %s (%d bytes)",
                                                     device_id[:20], tile_device_id[:8], len(auth_key)
                                                 )
@@ -1812,7 +1812,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     _LOGGER.debug("Processing %d items from metadata response", len(items))
                     for item in items:
                         # Log all available fields to find MAC addresses
-                        _LOGGER.info("🔍 v6 API item fields: %s", list(item.keys()))
+                        _LOGGER.debug("🔍 v6 API item fields: %s", list(item.keys()))
                         _LOGGER.debug("Full v6 API item: %s", item)
 
                         item_type = item.get("type", "device")
@@ -1867,14 +1867,14 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                         # Log all typeData fields to find MAC addresses
                         if type_data:
-                            _LOGGER.info("📍 v6 API typeData fields for %s: %s",
+                            _LOGGER.debug("📍 v6 API typeData fields for %s: %s",
                                         name or device_id, list(type_data.keys()))
                             _LOGGER.debug("Full typeData for %s: %s", device_id, type_data)
 
                             # Check nested objects within typeData
                             expected_fw_config = type_data.get("expectedFirmwareConfig") or type_data.get("expected_firmware_config") or {}
                             if expected_fw_config and isinstance(expected_fw_config, dict):
-                                _LOGGER.info("🔍 v6 API expectedFirmwareConfig fields for %s: %s",
+                                _LOGGER.debug("🔍 v6 API expectedFirmwareConfig fields for %s: %s",
                                             name or device_id, list(expected_fw_config.keys()))
                                 _LOGGER.debug("Full expectedFirmwareConfig for %s: %s", device_id, expected_fw_config)
 
@@ -1902,7 +1902,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             )
 
                         if mac_address:
-                            _LOGGER.info("✅ Found MAC address in v6 API for %s: %s", name or device_id, mac_address)
+                            _LOGGER.debug("✅ Found MAC address in v6 API for %s: %s", name or device_id, mac_address)
 
                         if tile_device_id and auth_key_b64:
                             try:
@@ -1916,13 +1916,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                 # Cache MAC address if available
                                 if mac_address:
                                     self._tile_mac_cache[tile_device_id] = mac_address
-                                    _LOGGER.info(
+                                    _LOGGER.debug(
                                         "✅ Cached MAC address from v6 API: %s -> %s",
                                         name or device_id,
                                         mac_address,
                                     )
 
-                                _LOGGER.info(
+                                _LOGGER.debug(
                                     "✓ Cached BLE auth from v6 API: %s -> %s (%d bytes)",
                                     name or device_id, tile_device_id[:8], len(auth_key)
                                 )
@@ -1930,7 +1930,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                 _LOGGER.debug("Failed to decode auth key for %s: %s", device_id, err)
                     # =========================================================================
 
-                    _LOGGER.info(
+                    _LOGGER.debug(
                         "✓ Cached metadata for %d devices: %s",
                         len(self._device_name_cache),
                         {k: v for k, v in list(self._device_name_cache.items())[:10]},

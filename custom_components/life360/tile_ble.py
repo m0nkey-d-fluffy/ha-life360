@@ -472,21 +472,25 @@ class TileBleClient:
             _LOGGER.warning("🔧 Auth data (after MEP header): %s", auth_data.hex())
 
             # Expected format: [response_prefix, randT, sresT, ...]
-            # randT and sresT sizes may vary - check actual response
-            if len(auth_data) < 17:  # Minimum: 1 byte prefix + 8 bytes randT + 8 bytes sresT
-                _LOGGER.error("❌ Auth response too short: %d bytes (expected >= 17)", len(auth_data))
-                # Log what we got for debugging
+            # MEP-enabled Tiles use 7-byte randT and sresT (14 bytes total)
+            # Non-MEP Tiles use 8-byte randT and sresT (16 bytes total)
+            response_prefix = auth_data[0]
+            _LOGGER.warning("🔧 Response prefix: 0x%02x (command %d)", response_prefix, response_prefix)
+
+            if len(auth_data) == 15:  # MEP format: 1 prefix + 7 randT + 7 sresT
+                _LOGGER.warning("🔧 MEP format detected (7-byte randT/sresT)")
+                rand_t = auth_data[1:8]
+                sres_t = auth_data[8:15]
+            elif len(auth_data) >= 17:  # Non-MEP format: 1 prefix + 8 randT + 8 sresT
+                _LOGGER.warning("🔧 Non-MEP format detected (8-byte randT/sresT)")
+                rand_t = auth_data[1:9]
+                sres_t = auth_data[9:17]
+            else:
+                _LOGGER.error("❌ Auth response unexpected length: %d bytes", len(auth_data))
                 _LOGGER.warning("🔧 Received auth_data breakdown:")
                 for i, byte in enumerate(auth_data):
                     _LOGGER.warning("   [%d]: 0x%02x", i, byte)
                 return False
-
-            # Parse randT and sresT (assuming 8 bytes each after first byte)
-            response_prefix = auth_data[0]
-            rand_t = auth_data[1:9]
-            sres_t = auth_data[9:17]
-
-            _LOGGER.warning("🔧 Response prefix: 0x%02x", response_prefix)
             _LOGGER.warning("🔧 Received randT: %s", rand_t.hex())
             _LOGGER.warning("🔧 Received sresT: %s", sres_t.hex())
 

@@ -195,16 +195,37 @@ class TileAPIClient:
                     _LOGGER.info("🔍 Tile API node %s raw fields: %s", node_id[:8], list(node_data.keys()))
                     _LOGGER.debug("Full node_data for %s: %s", node_id, node_data)
 
+                    # Check nested objects for MAC addresses
+                    firmware = node_data.get("firmware", {})
+                    if firmware:
+                        _LOGGER.info("🔍 Tile API node %s firmware fields: %s", node_id[:8], list(firmware.keys()) if isinstance(firmware, dict) else type(firmware))
+
+                    metadata = node_data.get("metadata", {})
+                    if metadata:
+                        _LOGGER.info("🔍 Tile API node %s metadata fields: %s", node_id[:8], list(metadata.keys()) if isinstance(metadata, dict) else type(metadata))
+                        _LOGGER.debug("Full metadata for %s: %s", node_id, metadata)
+
+                    user_node_data = node_data.get("user_node_data", {})
+                    if user_node_data:
+                        _LOGGER.info("🔍 Tile API node %s user_node_data fields: %s", node_id[:8], list(user_node_data.keys()) if isinstance(user_node_data, dict) else type(user_node_data))
+                        _LOGGER.debug("Full user_node_data for %s: %s", node_id, user_node_data)
+
                     auth_key = node_data.get("auth_key")
                     name = node_data.get("name", f"Tile {node_id[:8]}")
                     product_code = node_data.get("product_code", "UNKNOWN")
 
-                    # Check for MAC address fields
+                    # Check for MAC address fields in top-level AND nested objects
                     mac_address = (
                         node_data.get("mac_address") or
                         node_data.get("ble_address") or
                         node_data.get("hardware_address") or
-                        node_data.get("address")
+                        node_data.get("address") or
+                        (firmware.get("mac_address") if isinstance(firmware, dict) else None) or
+                        (firmware.get("ble_address") if isinstance(firmware, dict) else None) or
+                        (metadata.get("mac_address") if isinstance(metadata, dict) else None) or
+                        (metadata.get("ble_address") if isinstance(metadata, dict) else None) or
+                        (user_node_data.get("mac_address") if isinstance(user_node_data, dict) else None) or
+                        (user_node_data.get("ble_address") if isinstance(user_node_data, dict) else None)
                     )
                     if mac_address:
                         _LOGGER.info("✅ Found MAC address for %s: %s", name, mac_address)

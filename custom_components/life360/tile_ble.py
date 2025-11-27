@@ -688,6 +688,17 @@ async def discover_and_verify_tile_macs(
 
             _LOGGER.warning("📡 HA Bluetooth backend sees %d devices total", len(service_info_list))
 
+            # DEBUG: Log ALL devices to see what we're checking
+            _LOGGER.warning("🔧 DEBUG: Listing ALL %d devices from HA Bluetooth:", len(service_info_list))
+            for idx, service_info in enumerate(service_info_list, 1):
+                _LOGGER.warning("   %d. %s (%s) - Service UUIDs: %s",
+                              idx,
+                              service_info.name or "Unknown",
+                              service_info.address,
+                              service_info.service_uuids if service_info.service_uuids else "None")
+
+            _LOGGER.warning("🔍 Looking for Tile service UUID: %s", TILE_SERVICE_UUID)
+
             # Filter for Tiles
             for service_info in service_info_list:
                 if TILE_SERVICE_UUID in service_info.service_uuids:

@@ -647,3 +647,146 @@ async def stop_ring_tile_ble(
 
     finally:
         await client.disconnect()
+
+
+async def discover_and_verify_tile_macs(scan_timeout: float = 15.0) -> dict[str, str]:
+    """Scan for all Tile devices and read their actual device IDs to verify MAC mappings.
+
+    This is a diagnostic function to verify that our MAC derivation formula is correct.
+    It connects to each Tile found and reads the device ID from GATT characteristics.
+
+    Args:
+        scan_timeout: BLE scan timeout in seconds
+
+    Returns:
+        Dictionary mapping MAC addresses to actual Tile IDs read from devices
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔍 DIAGNOSTIC: Discovering ALL Tiles and reading device IDs")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    discovered_tiles = []
+    mac_to_id_map = {}
+
+    def detection_callback(device: BLEDevice, advertisement_data):
+        """Callback for each detected BLE device."""
+        # Check if device advertises Tile service
+        service_uuids = advertisement_data.service_uuids if hasattr(advertisement_data, 'service_uuids') else []
+
+        if TILE_SERVICE_UUID in service_uuids:
+            _LOGGER.warning("✅ Found Tile: %s at %s (RSSI: %s)",
+                          device.name or "Unknown",
+                          device.address,
+                          advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+            discovered_tiles.append(device)
+
+    try:
+        # Scan for Tiles
+        _LOGGER.warning("🔍 Scanning for Tile devices (filtering by service UUID)...")
+        scanner = BleakScanner(
+            detection_callback=detection_callback,
+            service_uuids=[TILE_SERVICE_UUID],
+        )
+
+        await scanner.start()
+        await asyncio.sleep(scan_timeout)
+        await scanner.stop()
+
+        _LOGGER.warning("🔍 Scan complete - found %d Tile(s)", len(discovered_tiles))
+
+        if not discovered_tiles:
+            _LOGGER.warning("⚠️  No Tiles found in range - make sure they're nearby and awake")
+            _LOGGER.warning("💡 Try pressing the button on each Tile to wake it up")
+            return {}
+
+        # Now connect to each discovered Tile and read its device ID
+        for device in discovered_tiles:
+            _LOGGER.warning("─────────────────────────────────────────────────────────")
+            _LOGGER.warning("📱 Connecting to Tile at %s...", device.address)
+
+            client = None
+            try:
+                client = BleakClient(device, timeout=30.0)
+                await asyncio.wait_for(client.connect(), timeout=30.0)
+
+                if not client.is_connected:
+                    _LOGGER.error("❌ Failed to connect to %s", device.address)
+                    continue
+
+                _LOGGER.warning("✅ Connected! Reading device ID from GATT characteristic...")
+
+                # Try to read the Tile ID characteristic
+                try:
+                    tile_id_bytes = await client.read_gatt_char(TILE_ID_CHAR_UUID)
+                    tile_id_hex = tile_id_bytes.hex()
+
+                    _LOGGER.warning("✅ SUCCESS! Read device ID from Tile:")
+                    _LOGGER.warning("   MAC Address: %s", device.address)
+                    _LOGGER.warning("   Device ID:   %s", tile_id_hex)
+
+                    # Store the mapping
+                    mac_to_id_map[device.address] = tile_id_hex
+
+                    # Verify against our derivation formula
+                    derived_mac = TileBleClient(tile_id_hex, b"0"*16)._tile_id_to_mac(tile_id_hex)
+                    _LOGGER.warning("   Derived MAC: %s", derived_mac)
+
+                    if derived_mac.upper() == device.address.upper():
+                        _LOGGER.warning("   ✅ MATCH! Our derivation formula is CORRECT!")
+                    else:
+                        _LOGGER.warning("   ❌ MISMATCH! Our derivation formula is WRONG!")
+                        _LOGGER.warning("   Expected: %s", derived_mac)
+                        _LOGGER.warning("   Got:      %s", device.address)
+
+                except Exception as char_err:
+                    _LOGGER.error("❌ Failed to read device ID characteristic: %s", char_err)
+                    _LOGGER.warning("💡 Trying to list all characteristics...")
+
+                    # List all services and characteristics as fallback
+                    try:
+                        for service in client.services:
+                            _LOGGER.warning("   Service: %s", service.uuid)
+                            for char in service.characteristics:
+                                _LOGGER.warning("      Char: %s (properties: %s)",
+                                              char.uuid, char.properties)
+                                # Try to read if readable
+                                if "read" in char.properties:
+                                    try:
+                                        value = await client.read_gatt_char(char.uuid)
+                                        _LOGGER.warning("         Value: %s (hex: %s)",
+                                                      value, value.hex())
+                                    except Exception:
+                                        pass
+                    except Exception as list_err:
+                        _LOGGER.error("❌ Failed to list characteristics: %s", list_err)
+
+            except asyncio.TimeoutError:
+                _LOGGER.error("❌ Connection timeout for %s", device.address)
+            except Exception as err:
+                _LOGGER.error("❌ Error connecting to %s: %s", device.address, err, exc_info=True)
+            finally:
+                if client and client.is_connected:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("📊 FINAL RESULTS:")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        if mac_to_id_map:
+            for mac, tile_id in mac_to_id_map.items():
+                _LOGGER.warning("MAC: %s → Tile ID: %s", mac, tile_id)
+        else:
+            _LOGGER.warning("⚠️  No device IDs were successfully read")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        return mac_to_id_map
+
+    except Exception as err:
+        _LOGGER.error("❌ Diagnostic scan failed: %s", err, exc_info=True)
+        return {}

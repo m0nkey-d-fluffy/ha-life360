@@ -1788,6 +1788,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     # =========================================================================
                     _LOGGER.debug("Processing %d items from metadata response", len(items))
                     for item in items:
+                        # Log all available fields to find MAC addresses
+                        _LOGGER.info("🔍 v6 API item fields: %s", list(item.keys()))
+                        _LOGGER.debug("Full v6 API item: %s", item)
+
                         item_type = item.get("type", "device")
 
                         # FIX 1: Handle Jiobit/Profiles (e.g. "Ollie")
@@ -1837,6 +1841,13 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
                         # Handle Auth Key (for BLE)
                         type_data = item.get("typeData") or item.get("type_data") or {}
+
+                        # Log all typeData fields to find MAC addresses
+                        if type_data:
+                            _LOGGER.info("📍 v6 API typeData fields for %s: %s",
+                                        name or device_id, list(type_data.keys()))
+                            _LOGGER.debug("Full typeData for %s: %s", device_id, type_data)
+
                         tile_device_id = type_data.get("deviceId") or type_data.get("device_id") or ""
                         auth_key_b64 = type_data.get("authKey") or type_data.get("auth_key") or ""
 

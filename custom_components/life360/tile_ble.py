@@ -185,18 +185,34 @@ class TileBleClient:
                 list(advertisement_data.service_uuids) if advertisement_data.service_uuids else "None"
             )
 
+            # Normalize this device's MAC for comparison
+            addr_normalized = device.address.lower().replace(":", "").replace("-", "")
+
             # PRIMARY: Check if device advertises Tile service UUID
             if advertisement_data.service_uuids and TILE_SERVICE_UUID in advertisement_data.service_uuids:
-                _LOGGER.warning("✅ FOUND TILE BY SERVICE UUID at %s!", device.address)
-                _LOGGER.warning("   Service UUID: %s", TILE_SERVICE_UUID)
-                _LOGGER.warning("   MAC: %s", device.address)
-                _LOGGER.warning("   Expected MAC from derivation: %s", expected_mac)
-                _LOGGER.warning("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
-                found_device = device
-                return
+                # Check if this is OUR target Tile (exact MAC match)
+                if addr_normalized == expected_mac_lower:
+                    _LOGGER.warning("✅✅✅ FOUND TARGET TILE BY EXACT MAC MATCH at %s!", device.address)
+                    _LOGGER.warning("   Service UUID: %s", TILE_SERVICE_UUID)
+                    _LOGGER.warning("   MAC: %s", device.address)
+                    _LOGGER.warning("   Expected MAC: %s", expected_mac)
+                    _LOGGER.warning("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+                    found_device = device
+                    return  # Stop scanning - we found our target!
+                else:
+                    # Found A Tile, but not OUR Tile - log it but keep scanning
+                    _LOGGER.warning("✅ FOUND TILE BY SERVICE UUID at %s (but not our target)", device.address)
+                    _LOGGER.warning("   Service UUID: %s", TILE_SERVICE_UUID)
+                    _LOGGER.warning("   MAC: %s (expected: %s)", device.address, expected_mac)
+                    _LOGGER.warning("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+
+                    # If we haven't found any device yet, use this as a fallback
+                    if found_device is None:
+                        _LOGGER.warning("   → Using as fallback candidate")
+                        found_device = device
+                    return
 
             # FALLBACK: Check by derived MAC address (less reliable due to MAC randomization)
-            addr_normalized = device.address.lower().replace(":", "").replace("-", "")
             if addr_normalized == expected_mac_lower:
                 _LOGGER.info("✅ MATCH: Found Tile by derived MAC address!")
                 _LOGGER.info("   Tile ID: %s", self.tile_id)
@@ -209,13 +225,15 @@ class TileBleClient:
             # Fallback: Check if first 6 bytes of tile_id are in the MAC address
             if len(tile_id_lower) >= 12 and tile_id_lower[:12] in addr_normalized:
                 _LOGGER.info("✅ Found matching Tile by partial ID in address: %s", device.address)
-                found_device = device
+                if found_device is None:  # Only use if we haven't found anything better
+                    found_device = device
                 return
 
             # Fallback: Check by name if it contains tile ID
             if device.name and tile_id_lower[:8] in device.name.lower():
                 _LOGGER.info("✅ Found matching Tile by name: %s at %s", device.name, device.address)
-                found_device = device
+                if found_device is None:  # Only use if we haven't found anything better
+                    found_device = device
 
         try:
             # DIAGNOSTIC: Temporarily scan ALL BLE devices (no service UUID filter)

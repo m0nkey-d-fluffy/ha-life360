@@ -256,25 +256,33 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔌 Connecting to Tile at %s using bleak-retry-connector...", self._device.address)
+            _LOGGER.info("🔌 Connecting directly to Tile at %s (30s timeout)...", self._device.address)
 
-            # Use Home Assistant's recommended connection method
-            self._client = await establish_connection(
-                BleakClientWithServiceCache,
-                self._device,
-                self._device.address,
-                max_attempts=3,
-            )
+            # Use direct BleakClient - simpler and works without HA Bluetooth backend complexity
+            self._client = BleakClient(self._device, timeout=30.0)
 
+            # Connect with asyncio timeout for reliability
+            await asyncio.wait_for(self._client.connect(), timeout=30.0)
+
+            if not self._client.is_connected:
+                raise BleakError("Connection established but client reports not connected")
+
+            _LOGGER.info("✅ Connected to Tile successfully!")
             _LOGGER.debug("📝 Subscribing to Tile response notifications...")
+
             # Subscribe to responses
             await self._client.start_notify(
                 MEP_RESPONSE_CHAR_UUID,
                 self._handle_response,
             )
 
-            _LOGGER.info("✅ Connected to Tile %s successfully", self._device.address)
+            _LOGGER.info("✅ Notifications enabled - ready to ring!")
             return True
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("❌ Connection to Tile timed out after 30 seconds")
+            self._client = None
+            return False
 
         except BleakError as err:
             _LOGGER.error("❌ Failed to connect to Tile: %s", err, exc_info=True)

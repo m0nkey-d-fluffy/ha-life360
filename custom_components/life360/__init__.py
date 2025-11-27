@@ -26,6 +26,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import (
     DOMAIN,
     SERVICE_BUZZ_JIOBIT,
+    SERVICE_DIAGNOSE_TILE_BLE,
     SERVICE_GET_DEVICES,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
@@ -359,6 +360,48 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         return result
 
     hass.services.async_register(DOMAIN, SERVICE_GET_DEVICES, get_devices)
+
+    async def diagnose_tile_ble(call: ServiceCall) -> dict:
+        """Diagnostic service to verify Tile MAC address mappings.
+
+        Scans for all Tile devices, connects to each one, and reads their
+        actual device IDs from GATT characteristics to verify the MAC derivation formula.
+        """
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔍 Service %s called - starting Tile BLE diagnostics", SERVICE_DIAGNOSE_TILE_BLE)
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import discover_and_verify_tile_macs
+
+            # Run the diagnostic scan
+            mac_to_id_map = await discover_and_verify_tile_macs(scan_timeout=15.0)
+
+            result = {
+                "tiles_found": len(mac_to_id_map),
+                "mappings": [
+                    {"mac_address": mac, "device_id": device_id}
+                    for mac, device_id in mac_to_id_map.items()
+                ],
+            }
+
+            # Fire an event with the results
+            hass.bus.async_fire(
+                f"{DOMAIN}_tile_ble_diagnostic",
+                result,
+            )
+
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+            _LOGGER.warning("✅ Service %s completed: Found %d Tile(s)", SERVICE_DIAGNOSE_TILE_BLE, len(mac_to_id_map))
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+            return result
+
+        except Exception as err:
+            _LOGGER.error("❌ Tile BLE diagnostic failed: %s", err, exc_info=True)
+            return {"tiles_found": 0, "mappings": [], "error": str(err)}
+
+    hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_TILE_BLE, diagnose_tile_ble)
 
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.

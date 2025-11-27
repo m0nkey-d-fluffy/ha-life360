@@ -45,6 +45,7 @@ CONF_TOKEN_TYPE = "token_type"
 CONF_VERBOSITY = "verbosity"
 
 SERVICE_BUZZ_JIOBIT = "buzz_jiobit"
+SERVICE_DIAGNOSE_TILE_BLE = "diagnose_tile_ble"
 SERVICE_GET_DEVICES = "get_devices"
 SERVICE_GET_EMERGENCY_CONTACTS = "get_emergency_contacts"
 SERVICE_GET_INTEGRATIONS = "get_integrations"

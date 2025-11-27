@@ -605,6 +605,57 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(DOMAIN, "diagnose_ring_tile_by_mac", diagnose_ring_by_mac)
 
+    async def list_tiles(call: ServiceCall) -> dict:
+        """List all cached Tile devices with their IDs, MACs, and auth keys."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("📋 Service diagnose_list_tiles called")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_list_tiles
+
+            # Get the first coordinator with Tile data
+            entries = hass.config_entries.async_entries(DOMAIN)
+            for entry in entries:
+                if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    continue
+
+                coordinator = entry.runtime_data.coordinator
+                if hasattr(coordinator, "_tile_mac_cache") and coordinator._tile_mac_cache:
+                    _LOGGER.warning("✅ Found coordinator with Tile data")
+                    results = await diagnose_list_tiles(coordinator)
+
+                    # Send notification with results
+                    message_lines = [f"Found {results['count']} Tile device(s):\n"]
+                    for tile in results["tiles"]:
+                        message_lines.append(
+                            f"📱 Device: {tile['device_id']}\n"
+                            f"   MAC: {tile['mac_address']}\n"
+                            f"   Tile ID: {tile['tile_id']}\n"
+                            f"   Auth: {'✓' if tile['has_auth_key'] else '✗'}\n"
+                        )
+
+                    await hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "message": "".join(message_lines),
+                            "title": "Tile Devices List",
+                            "notification_id": "life360_tile_list",
+                        },
+                    )
+
+                    return results
+
+            _LOGGER.warning("❌ No coordinator with Tile data found")
+            return {"tiles": [], "count": 0, "error": "No Tile data found"}
+
+        except Exception as err:
+            _LOGGER.error("❌ List tiles failed: %s", err, exc_info=True)
+            return {"tiles": [], "count": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, "diagnose_list_tiles", list_tiles)
+
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.
 

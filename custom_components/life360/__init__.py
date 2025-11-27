@@ -537,23 +537,35 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
             # Send notification with result
             if results.get("success"):
-                hass.components.persistent_notification.create(
-                    f"✅ SUCCESS! Tile at {mac_address} should be ringing!\n\n"
-                    f"Connected: {results.get('connected')}\n"
-                    f"Authenticated: {results.get('authenticated')}\n"
-                    f"Ring command sent: {results.get('rang')}",
-                    title="BLE Ring Test: SUCCESS",
-                    notification_id="life360_ble_ring_test"
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "message": (
+                            f"✅ SUCCESS! Tile at {mac_address} should be ringing!\n\n"
+                            f"Connected: {results.get('connected')}\n"
+                            f"Authenticated: {results.get('authenticated')}\n"
+                            f"Ring command sent: {results.get('rang')}"
+                        ),
+                        "title": "BLE Ring Test: SUCCESS",
+                        "notification_id": "life360_ble_ring_test",
+                    },
                 )
             else:
-                hass.components.persistent_notification.create(
-                    f"❌ FAILED: {results.get('error', 'Unknown error')}\n\n"
-                    f"MAC: {mac_address}\n"
-                    f"Tile ID: {tile_id}\n"
-                    f"Connected: {results.get('connected', False)}\n"
-                    f"Authenticated: {results.get('authenticated', False)}",
-                    title="BLE Ring Test: FAILED",
-                    notification_id="life360_ble_ring_test"
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "message": (
+                            f"❌ FAILED: {results.get('error', 'Unknown error')}\n\n"
+                            f"MAC: {mac_address}\n"
+                            f"Tile ID: {tile_id}\n"
+                            f"Connected: {results.get('connected', False)}\n"
+                            f"Authenticated: {results.get('authenticated', False)}"
+                        ),
+                        "title": "BLE Ring Test: FAILED",
+                        "notification_id": "life360_ble_ring_test",
+                    },
                 )
 
             return results
@@ -561,12 +573,18 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         except Exception as err:
             _LOGGER.error("❌ Ring test failed: %s", err, exc_info=True)
             error_msg = str(err)
-            hass.components.persistent_notification.create(
-                f"❌ EXCEPTION: {error_msg}\n\n"
-                f"MAC: {mac_address}\n"
-                f"Tile ID: {tile_id}",
-                title="BLE Ring Test: EXCEPTION",
-                notification_id="life360_ble_ring_test"
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "message": (
+                        f"❌ EXCEPTION: {error_msg}\n\n"
+                        f"MAC: {mac_address}\n"
+                        f"Tile ID: {tile_id}"
+                    ),
+                    "title": "BLE Ring Test: EXCEPTION",
+                    "notification_id": "life360_ble_ring_test",
+                },
             )
             return {"success": False, "error": error_msg}
 

@@ -612,27 +612,69 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
         _LOGGER.warning("═══════════════════════════════════════════════════════════")
 
         try:
-            from .tile_ble import diagnose_list_tiles
+            from .tile_ble import TileBleClient
 
             # Get the first coordinator with Tile data
             entries = hass.config_entries.async_entries(DOMAIN)
+            _LOGGER.warning("🔍 Found %d config entries", len(entries))
+
             for entry in entries:
                 if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    _LOGGER.warning("  ⚠️ Entry %s has no runtime_data", entry.entry_id)
                     continue
 
                 coordinator = entry.runtime_data.coordinator
-                if hasattr(coordinator, "_tile_mac_cache") and coordinator._tile_mac_cache:
-                    _LOGGER.warning("✅ Found coordinator with Tile data")
-                    results = await diagnose_list_tiles(coordinator)
+                _LOGGER.warning("  ✅ Entry %s has coordinator", entry.entry_id)
+
+                # Check what caches exist
+                has_mac_cache = hasattr(coordinator, "_tile_mac_cache")
+                has_auth_cache = hasattr(coordinator, "_tile_auth_cache")
+                _LOGGER.warning("     MAC cache exists: %s (count: %d)", has_mac_cache,
+                              len(coordinator._tile_mac_cache) if has_mac_cache else 0)
+                _LOGGER.warning("     Auth cache exists: %s (count: %d)", has_auth_cache,
+                              len(coordinator._tile_auth_cache) if has_auth_cache else 0)
+
+                # Try to build results from auth cache if MAC cache is empty
+                results = {"tiles": [], "count": 0}
+
+                if has_auth_cache and coordinator._tile_auth_cache:
+                    _LOGGER.warning("  📋 Building list from auth cache")
+                    for tile_id, auth_key in coordinator._tile_auth_cache.items():
+                        # Derive MAC from Tile ID
+                        mac_address = TileBleClient._tile_id_to_mac(tile_id)
+
+                        # Try to find device_id from MAC cache
+                        device_id = "Unknown"
+                        if has_mac_cache:
+                            for dev_id, mac in coordinator._tile_mac_cache.items():
+                                if mac.upper() == mac_address.upper():
+                                    device_id = dev_id
+                                    break
+
+                        tile_info = {
+                            "device_id": device_id,
+                            "mac_address": mac_address,
+                            "tile_id": tile_id,
+                            "has_auth_key": True,
+                        }
+                        results["tiles"].append(tile_info)
+
+                        _LOGGER.warning(
+                            "    🔹 Tile ID: %s\n"
+                            "       MAC: %s\n"
+                            "       Device ID: %s",
+                            tile_id, mac_address, device_id
+                        )
+
+                    results["count"] = len(results["tiles"])
 
                     # Send notification with results
-                    message_lines = [f"Found {results['count']} Tile device(s):\n"]
+                    message_lines = [f"Found {results['count']} Tile device(s):\n\n"]
                     for tile in results["tiles"]:
                         message_lines.append(
-                            f"📱 Device: {tile['device_id']}\n"
+                            f"📱 Tile ID: {tile['tile_id']}\n"
                             f"   MAC: {tile['mac_address']}\n"
-                            f"   Tile ID: {tile['tile_id']}\n"
-                            f"   Auth: {'✓' if tile['has_auth_key'] else '✗'}\n"
+                            f"   Device ID: {tile['device_id']}\n\n"
                         )
 
                     await hass.services.async_call(
@@ -644,6 +686,10 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
                             "notification_id": "life360_tile_list",
                         },
                     )
+
+                    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+                    _LOGGER.warning("✅ Found %d Tile(s)", results["count"])
+                    _LOGGER.warning("═══════════════════════════════════════════════════════════")
 
                     return results
 

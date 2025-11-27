@@ -1011,3 +1011,99 @@ async def diagnose_ring_all_ble_devices(
     _LOGGER.warning("═══════════════════════════════════════════════════════════")
 
     return results
+
+
+async def diagnose_raw_ble_scan(scan_timeout: float = 30.0) -> dict[str, Any]:
+    """Direct BLE scan bypassing HA's backend to capture raw advertisement data.
+
+    This diagnostic uses BleakScanner directly to see all advertisement data
+    including service UUIDs, service data, manufacturer data, etc.
+
+    Args:
+        scan_timeout: How long to scan in seconds
+
+    Returns:
+        Dictionary with scan results and details
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔬 DIAGNOSTIC: Raw BLE scan (bypassing HA Bluetooth)")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+    devices_found = {}
+    tiles_found = []
+
+    def detection_callback(device: BLEDevice, advertisement_data):
+        """Callback for each detected BLE device - log EVERYTHING."""
+        if device.address not in devices_found:
+            # Log complete advertisement data
+            service_uuids = list(advertisement_data.service_uuids) if advertisement_data.service_uuids else []
+            service_data = dict(advertisement_data.service_data) if advertisement_data.service_data else {}
+            manufacturer_data = dict(advertisement_data.manufacturer_data) if advertisement_data.manufacturer_data else {}
+
+            devices_found[device.address] = {
+                "name": device.name,
+                "rssi": advertisement_data.rssi,
+                "service_uuids": service_uuids,
+                "service_data": {k: v.hex() for k, v in service_data.items()},
+                "manufacturer_data": {k: v.hex() for k, v in manufacturer_data.items()},
+                "local_name": advertisement_data.local_name,
+            }
+
+            _LOGGER.warning("📱 Device: %s (%s)", device.name or device.address, device.address)
+            _LOGGER.warning("   RSSI: %s dBm", advertisement_data.rssi)
+            _LOGGER.warning("   Service UUIDs: %s", service_uuids or "None")
+            if service_data:
+                _LOGGER.warning("   Service Data:")
+                for uuid, data in service_data.items():
+                    _LOGGER.warning("      %s: %s", uuid, data.hex())
+            if manufacturer_data:
+                _LOGGER.warning("   Manufacturer Data:")
+                for company_id, data in manufacturer_data.items():
+                    _LOGGER.warning("      Company %s: %s", hex(company_id), data.hex())
+
+            # Check if this is a Tile
+            if TILE_SERVICE_UUID in service_uuids:
+                _LOGGER.warning("   🎉 THIS IS A TILE!")
+                tiles_found.append(device.address)
+
+            # Also check for 0xFEED in service data or 16-bit UUID format
+            if "0000feed-0000-1000-8000-00805f9b34fb" in service_uuids or \
+               any("feed" in str(uuid).lower() for uuid in service_uuids):
+                _LOGGER.warning("   🎉 FOUND FEED UUID!")
+                if device.address not in tiles_found:
+                    tiles_found.append(device.address)
+
+    try:
+        _LOGGER.warning("🔍 Starting direct BLE scan for %d seconds...", scan_timeout)
+        _LOGGER.warning("💡 Press Tile buttons NOW to wake them up!")
+
+        scanner = BleakScanner(detection_callback=detection_callback)
+
+        await scanner.start()
+        await asyncio.sleep(scan_timeout)
+        await scanner.stop()
+
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("📊 SCAN RESULTS:")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("   Total devices found: %d", len(devices_found))
+        _LOGGER.warning("   Tiles identified: %d", len(tiles_found))
+        if tiles_found:
+            _LOGGER.warning("   Tile MACs: %s", tiles_found)
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        return {
+            "total_devices": len(devices_found),
+            "tiles_found": len(tiles_found),
+            "tile_macs": tiles_found,
+            "all_devices": devices_found,
+        }
+
+    except Exception as err:
+        _LOGGER.error("❌ Direct scan failed: %s", err, exc_info=True)
+        return {}
+

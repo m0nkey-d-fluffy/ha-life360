@@ -34,6 +34,22 @@ diagnose_ring_all_ble:
   name: Ring All BLE Devices (Brute Force)
   description: "DIAGNOSTIC: Attempts to connect to EVERY BLE device seen by Home Assistant and tries to ring it as a Tile. This brute-force approach helps identify which MAC addresses are actually Tiles. WARNING: This will attempt connections to all nearby BLE devices. Check logs for results and listen for which Tiles ring!"
 
+diagnose_raw_ble_scan:
+  name: Raw BLE Scan (Direct)
+  description: "DIAGNOSTIC: Performs a direct BLE scan bypassing Home Assistant's Bluetooth backend. Logs ALL advertisement data including service UUIDs, service data, and manufacturer data for every device found. Use this to troubleshoot when HA's Bluetooth backend isn't seeing service UUIDs. Press Tile buttons during scan! Check logs for detailed results."
+  fields:
+    scan_timeout:
+      name: Scan Timeout
+      description: How long to scan in seconds
+      required: false
+      default: 30
+      example: 30
+      selector:
+        number:
+          min: 10
+          max: 120
+          unit_of_measurement: seconds
+
 buzz_jiobit:
   name: Buzz Jiobit Device
   description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound. You can use either entity_id (easier) or device_id + circle_id (advanced).

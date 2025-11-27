@@ -1013,6 +1013,91 @@ async def diagnose_ring_all_ble_devices(
     return results
 
 
+async def diagnose_ring_tile_by_mac(
+    mac_address: str,
+    tile_id: str,
+    auth_key: bytes,
+) -> dict[str, Any]:
+    """Test ringing a specific Tile by MAC address.
+
+    This diagnostic connects directly to a known MAC and attempts to ring it.
+
+    Args:
+        mac_address: The MAC address to connect to
+        tile_id: The Tile device ID (for logging)
+        auth_key: The authentication key
+
+    Returns:
+        Dictionary with test results
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔔 DIAGNOSTIC: Test ring Tile via BLE")
+    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("   Target MAC: %s", mac_address)
+    _LOGGER.warning("   Tile ID: %s", tile_id)
+    _LOGGER.warning("   Auth key length: %d bytes", len(auth_key))
+
+    try:
+        # Create Tile BLE client
+        client = TileBleClient(mac_address, auth_key, timeout=30.0)
+
+        _LOGGER.warning("🔌 Connecting to Tile...")
+        await client.connect()
+
+        if not client.is_connected:
+            _LOGGER.error("❌ Failed to connect")
+            return {"success": False, "error": "Connection failed"}
+
+        _LOGGER.warning("✅ Connected!")
+
+        # Authenticate
+        _LOGGER.warning("🔐 Authenticating...")
+        auth_success = await client.authenticate()
+
+        if not auth_success:
+            _LOGGER.error("❌ Authentication failed")
+            await client.disconnect()
+            return {"success": False, "error": "Authentication failed"}
+
+        _LOGGER.warning("✅ Authenticated!")
+
+        # Ring the Tile
+        _LOGGER.warning("🔔 Sending ring command...")
+        ring_success = await client.ring(volume=TileVolume.HIGH, duration_seconds=10)
+
+        if ring_success:
+            _LOGGER.warning("🎉 SUCCESS! Tile should be ringing for 10 seconds!")
+            _LOGGER.warning("🔊 Listen for the Tile ringing...")
+        else:
+            _LOGGER.error("❌ Ring command failed")
+
+        await client.disconnect()
+        _LOGGER.warning("✅ Disconnected")
+
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        return {
+            "success": ring_success,
+            "mac_address": mac_address,
+            "tile_id": tile_id,
+            "connected": True,
+            "authenticated": True,
+            "rang": ring_success,
+        }
+
+    except Exception as err:
+        _LOGGER.error("❌ Test failed: %s", err, exc_info=True)
+        return {
+            "success": False,
+            "error": str(err),
+            "mac_address": mac_address,
+            "tile_id": tile_id,
+        }
+
+
 async def diagnose_raw_ble_scan(scan_timeout: float = 30.0) -> dict[str, Any]:
     """Direct BLE scan bypassing HA's backend to capture raw advertisement data.
 

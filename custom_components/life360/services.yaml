@@ -50,6 +50,25 @@ diagnose_raw_ble_scan:
           max: 120
           unit_of_measurement: seconds
 
+diagnose_ring_tile_by_mac:
+  name: Test Ring Tile by MAC
+  description: "DIAGNOSTIC: Directly connects to a Tile at a specific MAC address and attempts to ring it. Use this to test BLE ring functionality for Tiles that were found in the raw scan. You'll need the MAC address and Tile ID."
+  fields:
+    mac_address:
+      name: MAC Address
+      description: The MAC address to connect to (e.g., C3:A7:57:B8:47:9C)
+      required: true
+      example: "C3:A7:57:B8:47:9C"
+      selector:
+        text:
+    tile_id:
+      name: Tile ID
+      description: The Tile device ID (from Life360 API)
+      required: true
+      example: "03a757b8479cbdfc"
+      selector:
+        text:
+
 buzz_jiobit:
   name: Buzz Jiobit Device
   description: Send a buzz command to a Jiobit pet GPS tracker to help locate your pet. The device will emit a sound. You can use either entity_id (easier) or device_id + circle_id (advanced).

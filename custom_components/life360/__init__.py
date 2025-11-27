@@ -501,6 +501,47 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(DOMAIN, "diagnose_raw_ble_scan", diagnose_raw_scan)
 
+    async def diagnose_ring_by_mac(call: ServiceCall) -> dict:
+        """Test ringing a specific Tile by MAC address."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔔 Service diagnose_ring_tile_by_mac called")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_ring_tile_by_mac
+
+            mac_address = call.data.get("mac_address")
+            tile_id = call.data.get("tile_id", "unknown")
+
+            if not mac_address:
+                _LOGGER.error("❌ mac_address is required")
+                return {"success": False, "error": "mac_address required"}
+
+            # Get auth key for this tile_id from coordinator
+            auth_key = None
+            entries = hass.config_entries.async_entries(DOMAIN)
+            for entry in entries:
+                coordinator = entry.runtime_data.coordinator
+                if hasattr(coordinator, "_tile_auth_cache"):
+                    if tile_id in coordinator._tile_auth_cache:
+                        auth_key = coordinator._tile_auth_cache[tile_id]
+                        if not isinstance(auth_key, bytes):
+                            auth_key = bytes.fromhex(auth_key)
+                        break
+
+            if not auth_key:
+                _LOGGER.error("❌ No auth key found for Tile ID: %s", tile_id)
+                return {"success": False, "error": f"No auth key for {tile_id}"}
+
+            results = await diagnose_ring_tile_by_mac(mac_address, tile_id, auth_key)
+            return results
+
+        except Exception as err:
+            _LOGGER.error("❌ Ring test failed: %s", err, exc_info=True)
+            return {"success": False, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, "diagnose_ring_tile_by_mac", diagnose_ring_by_mac)
+
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.
 

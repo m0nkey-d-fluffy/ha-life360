@@ -3,6 +3,49 @@
 A [Home Assistant](https://www.home-assistant.io/) integration for Life360.
 Creates Device Tracker (`device_tracker`) entities to show where Life360 Members are located.
 
+---
+
+## 🚀 Fork Improvements
+
+This is an **enhanced fork** of the original [ha-life360](https://github.com/pnbruckner/ha-life360) integration by [@pnbruckner](https://github.com/pnbruckner).
+
+**Major enhancements in this fork:**
+
+### Tile/Jiobit Device Name Automation
+- ✨ **Automatic device names** - No manual configuration required!
+- 🔧 **Auto-generated device IDs** - Randomly generated Android device IDs (no network capture needed)
+- 🔒 **Cloudflare WAF bypass** - curl_cffi subprocess with TLS fingerprinting
+- 🔄 **Session establishment** - Mimics mobile app behavior to avoid blocking
+- 📡 **v6 API integration** - Fetches device names via Life360's v6/devices endpoint
+- 🗂️ **Bidirectional caching** - Maps Life360 IDs ↔ Tile BLE IDs ↔ Device Names
+
+### Tile BLE Authentication
+- 🔑 **Form-encoded authentication** - Proper Tile API authentication for BLE commands
+- 📱 **Auth key extraction** - Automatically decodes base64 auth keys from v6 API
+- 🎯 **Multiple fallbacks** - Extracts auth data from v5/circles/devices/locations OR v6/devices
+- 🔊 **Ring command support** - Full BLE ringing functionality for Tile devices
+
+### Developer Tools & Documentation
+- 🛠️ **Comprehensive test suite** - Standalone tools for v6 API testing and debugging
+- 📚 **Developer tools** (`tools/` directory) - Test scripts, decoders, and documentation
+- 📖 **Architecture guides** - Complete documentation of device mapping and caching
+- 🐛 **Debugging utilities** - Device mapping decoder, auth key visualizer
+
+### Technical Implementation
+- 🔐 **TLS fingerprinting** - Impersonates Android Chrome to bypass Cloudflare
+- 🌐 **HTTP/2 support** - Native HTTP/2 matching mobile app protocol
+- 🍪 **Cookie handling** - Persistent session cookies across requests
+- ☁️ **CloudEvents headers** - Proper ce-* headers required by v6 API
+- ⚙️ **Automatic dependency management** - curl_cffi auto-installed via HACS
+- 🏗️ **Subprocess architecture** - Clean separation of curl_cffi from HA core
+
+**Original integration:** https://github.com/pnbruckner/ha-life360
+**This fork:** https://github.com/m0nkey-d-fluffy/ha-life360
+
+Special thanks to [@pnbruckner](https://github.com/pnbruckner) for the original integration foundation!
+
+---
+
 **New in v0.7.0:**
 
 **Device Tracking:**

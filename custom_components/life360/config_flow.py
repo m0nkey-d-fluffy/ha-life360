@@ -47,7 +47,6 @@ from .const import (
     COMM_TIMEOUT,
     CONF_ACCOUNTS,
     CONF_AUTHORIZATION,
-    CONF_DEVICE_ID,
     CONF_DRIVING_SPEED,
     CONF_MAX_GPS_ACCURACY,
     CONF_SHOW_DRIVING,
@@ -125,8 +124,6 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
                 float | None, user_input.get(CONF_DRIVING_SPEED)
             )
             self._opts.driving = cast(bool, user_input[CONF_SHOW_DRIVING])
-            device_id = cast(str | None, user_input.get(CONF_DEVICE_ID))
-            self._opts.device_id = device_id.strip() if device_id else None
             tile_email = cast(str | None, user_input.get(CONF_TILE_EMAIL))
             self._opts.tile_email = tile_email.strip() if tile_email else None
             tile_password = cast(str | None, user_input.get(CONF_TILE_PASSWORD))
@@ -155,9 +152,6 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
                     )
                 ),
                 vol.Required(CONF_SHOW_DRIVING): BooleanSelector(),
-                vol.Optional(CONF_DEVICE_ID): TextSelector(
-                    TextSelectorConfig(type=TextSelectorType.TEXT)
-                ),
                 vol.Optional(CONF_TILE_EMAIL): TextSelector(
                     TextSelectorConfig(type=TextSelectorType.EMAIL)
                 ),
@@ -177,10 +171,6 @@ class Life360Flow(ConfigEntryBaseFlow, ABC):
         data_schema = self.add_suggested_values_to_schema(
             data_schema, {CONF_SHOW_DRIVING: self._opts.driving}
         )
-        if self._opts.device_id:
-            data_schema = self.add_suggested_values_to_schema(
-                data_schema, {CONF_DEVICE_ID: self._opts.device_id}
-            )
         if self._opts.tile_email:
             data_schema = self.add_suggested_values_to_schema(
                 data_schema, {CONF_TILE_EMAIL: self._opts.tile_email}

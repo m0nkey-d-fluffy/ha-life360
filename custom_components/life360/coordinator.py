@@ -654,8 +654,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                                 self._tile_auth_cache[tile_device_id] = auth_key
                                                 self._tile_ble_id_cache[tile_device_id] = tile_device_id
                                                 _LOGGER.info(
-                                                    "✓ Cached Tile BLE auth data from locations: device_id=%s, ble_id=%s",
-                                                    device_id, tile_device_id
+                                                    "✓ Cached BLE auth from v5 locations: %s -> %s (%d bytes)",
+                                                    device_id[:20], tile_device_id[:8], len(auth_key)
                                                 )
                                             except Exception as err:
                                                 _LOGGER.debug("Failed to decode Tile auth key from locations: %s", err)
@@ -1844,8 +1844,12 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                 # Also cache by BLE device ID for lookup
                                 self._tile_auth_cache[tile_device_id] = auth_key
                                 self._tile_ble_id_cache[tile_device_id] = tile_device_id
-                            except Exception:
-                                _LOGGER.debug("Failed to decode auth key for %s", device_id)
+                                _LOGGER.info(
+                                    "✓ Cached BLE auth from v6 API: %s -> %s (%d bytes)",
+                                    name or device_id, tile_device_id[:8], len(auth_key)
+                                )
+                            except Exception as err:
+                                _LOGGER.debug("Failed to decode auth key for %s: %s", device_id, err)
                     # =========================================================================
 
                     _LOGGER.info(

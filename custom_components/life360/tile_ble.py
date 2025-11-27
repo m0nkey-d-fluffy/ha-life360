@@ -110,6 +110,38 @@ class TileBleClient:
         self._rand_a: bytes = b""
         self._channel_key: bytes = b""
 
+    def _tile_id_to_mac(self, tile_id: str) -> str:
+        """Convert Tile ID to expected BLE MAC address.
+
+        Tiles use a random static BLE address derived from their device ID.
+        The MAC address is the first 6 bytes of the Tile ID with the first byte
+        modified to create a valid BLE random static address (bits 7-6 set to 11).
+
+        Args:
+            tile_id: Tile device ID (e.g., "03a757b8479cbdfc")
+
+        Returns:
+            Expected MAC address (e.g., "C3:A7:57:B8:47:9C")
+        """
+        # Remove any separators and convert to lowercase
+        tile_id_clean = tile_id.lower().replace(":", "").replace("-", "")
+
+        # Take first 6 bytes (12 hex chars)
+        if len(tile_id_clean) < 12:
+            _LOGGER.warning("Tile ID too short for MAC derivation: %s", tile_id)
+            return ""
+
+        tile_bytes = bytes.fromhex(tile_id_clean[:12])
+
+        # For BLE random static address, bits 7-6 of first byte must be 11
+        # So we set bits 7-6: (byte & 0x3F) | 0xC0
+        mac_bytes = bytearray(tile_bytes)
+        mac_bytes[0] = (mac_bytes[0] & 0x3F) | 0xC0
+
+        # Format as MAC address
+        mac = ":".join(f"{b:02X}" for b in mac_bytes)
+        return mac
+
     async def scan_for_tile(self, scan_timeout: float = 10.0) -> BLEDevice | None:
         """Scan for the Tile device by ID.
 
@@ -121,20 +153,22 @@ class TileBleClient:
         """
         _LOGGER.info("🔍 Scanning for Tile device: %s (timeout: %ds)", self.tile_id, scan_timeout)
 
-        # Normalize tile_id for comparison
-        tile_id_lower = self.tile_id.lower().replace(":", "").replace("-", "")
-        _LOGGER.debug("Normalized Tile ID for matching: %s", tile_id_lower)
+        # Calculate expected MAC address from Tile ID
+        expected_mac = self._tile_id_to_mac(self.tile_id)
+        _LOGGER.info("💡 Derived expected MAC address from Tile ID: %s", expected_mac)
 
-        # Store advertising data from devices
-        advertising_data_cache = {}
+        # Normalize for comparison
+        tile_id_lower = self.tile_id.lower().replace(":", "").replace("-", "")
+        expected_mac_lower = expected_mac.lower().replace(":", "").replace("-", "")
+
+        _LOGGER.debug("Normalized Tile ID for matching: %s", tile_id_lower)
+        _LOGGER.debug("Normalized expected MAC for matching: %s", expected_mac_lower)
+
         found_device = None
 
         def detection_callback(device: BLEDevice, advertisement_data):
             """Callback for each detected BLE device."""
             nonlocal found_device
-
-            # Cache advertising data for this device
-            advertising_data_cache[device.address] = advertisement_data
 
             _LOGGER.debug(
                 "📡 BLE device detected: name=%s, address=%s, rssi=%s",
@@ -143,46 +177,24 @@ class TileBleClient:
                 advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A'
             )
 
-            # Log advertising data for debugging
-            _LOGGER.info("🔍 Advertising data for %s (%s):", device.name or "N/A", device.address)
-            _LOGGER.info("  - Local name: %s", advertisement_data.local_name if hasattr(advertisement_data, 'local_name') else 'N/A')
-            _LOGGER.info("  - Service UUIDs: %s", advertisement_data.service_uuids if hasattr(advertisement_data, 'service_uuids') else [])
-
-            # Log manufacturer data
-            if hasattr(advertisement_data, 'manufacturer_data') and advertisement_data.manufacturer_data:
-                _LOGGER.info("  - Manufacturer data:")
-                for company_id, data in advertisement_data.manufacturer_data.items():
-                    _LOGGER.info("    Company ID 0x%04x: %s", company_id, data.hex() if isinstance(data, bytes) else data)
-                    # Try to find Tile ID in manufacturer data
-                    if isinstance(data, bytes):
-                        data_hex = data.hex()
-                        if tile_id_lower in data_hex:
-                            _LOGGER.info("✅ MATCH: Found Tile ID %s in manufacturer data!", self.tile_id)
-                            found_device = device
-            else:
-                _LOGGER.info("  - Manufacturer data: None")
-
-            # Log service data
-            if hasattr(advertisement_data, 'service_data') and advertisement_data.service_data:
-                _LOGGER.info("  - Service data:")
-                for service_uuid, data in advertisement_data.service_data.items():
-                    _LOGGER.info("    Service %s: %s", service_uuid, data.hex() if isinstance(data, bytes) else data)
-                    # Try to find Tile ID in service data
-                    if isinstance(data, bytes):
-                        data_hex = data.hex()
-                        if tile_id_lower in data_hex:
-                            _LOGGER.info("✅ MATCH: Found Tile ID %s in service data!", self.tile_id)
-                            found_device = device
-            else:
-                _LOGGER.info("  - Service data: None")
-
-            # Check by address (existing logic)
+            # Check by derived MAC address (primary method)
             addr_normalized = device.address.lower().replace(":", "").replace("-", "")
-            if tile_id_lower in addr_normalized or addr_normalized in tile_id_lower:
-                _LOGGER.info("✅ Found matching Tile by address: %s", device.address)
+            if addr_normalized == expected_mac_lower:
+                _LOGGER.info("✅ MATCH: Found Tile by derived MAC address!")
+                _LOGGER.info("   Tile ID: %s", self.tile_id)
+                _LOGGER.info("   Expected MAC: %s", expected_mac)
+                _LOGGER.info("   Actual MAC: %s", device.address)
+                _LOGGER.info("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
                 found_device = device
+                return
 
-            # Check by name (existing logic)
+            # Fallback: Check if first 6 bytes of tile_id are in the MAC address
+            if len(tile_id_lower) >= 12 and tile_id_lower[:12] in addr_normalized:
+                _LOGGER.info("✅ Found matching Tile by partial ID in address: %s", device.address)
+                found_device = device
+                return
+
+            # Fallback: Check by name if it contains tile ID
             if device.name and tile_id_lower[:8] in device.name.lower():
                 _LOGGER.info("✅ Found matching Tile by name: %s at %s", device.name, device.address)
                 found_device = device
@@ -197,17 +209,14 @@ class TileBleClient:
             await asyncio.sleep(scan_timeout)
             await scanner.stop()
 
-            _LOGGER.info("📡 BLE scan complete: Found %d Tile devices nearby", len(advertising_data_cache))
-
             if found_device:
-                _LOGGER.info("✅ Match found for Tile %s: %s (RSSI: %s)",
-                           self.tile_id,
-                           found_device.address,
-                           advertising_data_cache.get(found_device.address).rssi if found_device.address in advertising_data_cache else 'N/A')
+                _LOGGER.info("✅ Successfully located Tile device!")
                 self._device = found_device
                 return found_device
 
-            _LOGGER.warning("❌ Tile %s not found in BLE range after scanning %d devices", self.tile_id, len(advertising_data_cache))
+            _LOGGER.warning("❌ Tile %s not found in BLE range", self.tile_id)
+            _LOGGER.warning("   Expected MAC: %s", expected_mac)
+            _LOGGER.warning("   If the Tile is nearby, it may be out of range or sleeping")
             return None
 
         except Exception as err:

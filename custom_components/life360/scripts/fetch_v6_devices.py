@@ -42,6 +42,9 @@ API_BASE = "https://api-cloudfront.life360.com"
 async def establish_session(session, bearer_token, device_id, circle_id):
     """Establish session by calling preliminary API endpoints."""
 
+    # Strip "Bearer " prefix if present (coordinator passes full "Bearer xxx" value)
+    token = bearer_token.removeprefix("Bearer ").strip()
+
     print("\n" + "="*80, file=sys.stderr)
     print("ESTABLISHING SESSION", file=sys.stderr)
     print("="*80, file=sys.stderr)
@@ -55,7 +58,7 @@ async def establish_session(session, bearer_token, device_id, circle_id):
             "Accept": "application/json",
             "Accept-Language": "en_AU",
             "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
-            "Authorization": f"Bearer {bearer_token}",
+            "Authorization": f"Bearer {token}",
             "x-device-id": device_id,
             "ce-specversion": "1.0",
             "ce-type": ce_type,
@@ -99,6 +102,9 @@ async def establish_session(session, bearer_token, device_id, circle_id):
 async def fetch_devices(bearer_token, device_id, circle_id):
     """Fetch v6/devices data using curl_cffi with TLS fingerprinting."""
 
+    # Strip "Bearer " prefix if present (coordinator passes full "Bearer xxx" value)
+    token = bearer_token.removeprefix("Bearer ").strip()
+
     # Generate CloudEvents headers
     ce_id = str(uuid.uuid4())
     ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -107,7 +113,7 @@ async def fetch_devices(bearer_token, device_id, circle_id):
         "Accept": "application/json",
         "Accept-Language": "en_AU",
         "User-Agent": "com.life360.android.safetymapd/KOKO/25.45.0 android/12",
-        "Authorization": f"Bearer {bearer_token}",
+        "Authorization": f"Bearer {token}",
         "ce-specversion": "1.0",
         "ce-type": "com.life360.device.devices.v1",
         "ce-id": ce_id,

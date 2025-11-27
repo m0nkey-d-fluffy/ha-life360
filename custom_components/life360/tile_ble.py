@@ -19,6 +19,7 @@ try:
     from bleak import BleakClient, BleakScanner
     from bleak.backends.device import BLEDevice
     from bleak.exc import BleakError
+    from bleak_retry_connector import establish_connection, BleakClientWithServiceCache
     BLEAK_AVAILABLE = True
 except ImportError:
     BLEAK_AVAILABLE = False
@@ -26,6 +27,8 @@ except ImportError:
     BleakScanner = None
     BLEDevice = None
     BleakError = Exception
+    establish_connection = None
+    BleakClientWithServiceCache = None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -253,9 +256,15 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔌 Connecting to Tile at %s...", self._device.address)
-            self._client = BleakClient(self._device, timeout=self.timeout)
-            await self._client.connect()
+            _LOGGER.info("🔌 Connecting to Tile at %s using bleak-retry-connector...", self._device.address)
+
+            # Use Home Assistant's recommended connection method
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._device,
+                self._device.address,
+                max_attempts=3,
+            )
 
             _LOGGER.debug("📝 Subscribing to Tile response notifications...")
             # Subscribe to responses

@@ -361,7 +361,7 @@ class TileBleClient:
 
     def _handle_response(self, sender: Any, data: bytes) -> None:
         """Handle response from Tile."""
-        _LOGGER.debug("Tile response: %s", data.hex())
+        _LOGGER.warning("🔧 Tile response received from %s: %s (length=%d)", sender, data.hex(), len(data))
         self._response_data = data
         self._response_event.set()
 
@@ -380,14 +380,22 @@ class TileBleClient:
         self._response_event.clear()
         self._response_data = b""
 
-        _LOGGER.debug("Sending to Tile: %s", data.hex())
-        await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, data)
+        _LOGGER.warning("🔧 Sending to Tile: %s (length=%d)", data.hex(), len(data))
+        _LOGGER.warning("🔧 Writing to characteristic: %s", MEP_COMMAND_CHAR_UUID)
+        try:
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, data)
+            _LOGGER.warning("🔧 Write completed successfully")
+        except Exception as e:
+            _LOGGER.error("❌ Failed to write to characteristic: %s", e, exc_info=True)
+            return b""
 
         # Wait for response
+        _LOGGER.warning("🔧 Waiting for response (timeout=5.0s)...")
         try:
             await asyncio.wait_for(self._response_event.wait(), timeout=5.0)
+            _LOGGER.warning("🔧 Response received!")
         except asyncio.TimeoutError:
-            _LOGGER.warning("Timeout waiting for Tile response")
+            _LOGGER.warning("⏱️ Timeout waiting for Tile response after 5 seconds")
             return b""
 
         return self._response_data
@@ -403,17 +411,34 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔐 Starting Tile authentication handshake...")
+            _LOGGER.warning("🔐 Starting Tile authentication handshake...")
+
+            # DIAGNOSTIC: First verify we can read from the Tile
+            _LOGGER.warning("🔧 DIAGNOSTIC: Attempting to read Tile ID characteristic...")
+            try:
+                tile_id_bytes = await self._client.read_gatt_char(TILE_ID_CHAR_UUID)
+                _LOGGER.warning("✅ Successfully read Tile ID: %s", tile_id_bytes.hex())
+            except Exception as e:
+                _LOGGER.error("❌ Failed to read Tile ID characteristic: %s", e)
+                _LOGGER.warning("🔧 Listing all available services and characteristics...")
+                for service in self._client.services:
+                    _LOGGER.warning("   Service: %s", service.uuid)
+                    for char in service.characteristics:
+                        props = ",".join(char.properties)
+                        _LOGGER.warning("      Char: %s [%s]", char.uuid, props)
 
             # Generate random value for authentication
             self._rand_a = os.urandom(8)
-            _LOGGER.debug("Generated randA: %s", self._rand_a.hex())
+            _LOGGER.warning("🔧 Generated randA: %s", self._rand_a.hex())
 
             # Step 1: Send AUTH command with randA
             # Format: [TOA_AUTH, randA (8 bytes)]
             auth_cmd = bytes([ToaCommand.AUTH]) + self._rand_a
-            _LOGGER.debug("Step 1: Sending AUTH command with randA")
+            _LOGGER.warning("🔧 Step 1: Sending AUTH command with randA")
+            _LOGGER.warning("🔧 Command bytes: %s (length=%d)", auth_cmd.hex(), len(auth_cmd))
+            _LOGGER.warning("🔧 Target characteristic: %s", MEP_COMMAND_CHAR_UUID)
             response = await self._send_command(auth_cmd)
+            _LOGGER.warning("🔧 Received response: %s (length=%d)", response.hex() if response else "empty", len(response))
 
             if len(response) < 17:
                 _LOGGER.error("❌ Invalid auth response length: %d (expected >= 17)", len(response))

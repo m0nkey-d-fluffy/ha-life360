@@ -125,46 +125,89 @@ class TileBleClient:
         tile_id_lower = self.tile_id.lower().replace(":", "").replace("-", "")
         _LOGGER.debug("Normalized Tile ID for matching: %s", tile_id_lower)
 
+        # Store advertising data from devices
+        advertising_data_cache = {}
+        found_device = None
+
+        def detection_callback(device: BLEDevice, advertisement_data):
+            """Callback for each detected BLE device."""
+            nonlocal found_device
+
+            # Cache advertising data for this device
+            advertising_data_cache[device.address] = advertisement_data
+
+            _LOGGER.debug(
+                "📡 BLE device detected: name=%s, address=%s, rssi=%s",
+                device.name or "N/A",
+                device.address,
+                advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A'
+            )
+
+            # Log advertising data for debugging
+            _LOGGER.info("🔍 Advertising data for %s (%s):", device.name or "N/A", device.address)
+            _LOGGER.info("  - Local name: %s", advertisement_data.local_name if hasattr(advertisement_data, 'local_name') else 'N/A')
+            _LOGGER.info("  - Service UUIDs: %s", advertisement_data.service_uuids if hasattr(advertisement_data, 'service_uuids') else [])
+
+            # Log manufacturer data
+            if hasattr(advertisement_data, 'manufacturer_data') and advertisement_data.manufacturer_data:
+                _LOGGER.info("  - Manufacturer data:")
+                for company_id, data in advertisement_data.manufacturer_data.items():
+                    _LOGGER.info("    Company ID 0x%04x: %s", company_id, data.hex() if isinstance(data, bytes) else data)
+                    # Try to find Tile ID in manufacturer data
+                    if isinstance(data, bytes):
+                        data_hex = data.hex()
+                        if tile_id_lower in data_hex:
+                            _LOGGER.info("✅ MATCH: Found Tile ID %s in manufacturer data!", self.tile_id)
+                            found_device = device
+            else:
+                _LOGGER.info("  - Manufacturer data: None")
+
+            # Log service data
+            if hasattr(advertisement_data, 'service_data') and advertisement_data.service_data:
+                _LOGGER.info("  - Service data:")
+                for service_uuid, data in advertisement_data.service_data.items():
+                    _LOGGER.info("    Service %s: %s", service_uuid, data.hex() if isinstance(data, bytes) else data)
+                    # Try to find Tile ID in service data
+                    if isinstance(data, bytes):
+                        data_hex = data.hex()
+                        if tile_id_lower in data_hex:
+                            _LOGGER.info("✅ MATCH: Found Tile ID %s in service data!", self.tile_id)
+                            found_device = device
+            else:
+                _LOGGER.info("  - Service data: None")
+
+            # Check by address (existing logic)
+            addr_normalized = device.address.lower().replace(":", "").replace("-", "")
+            if tile_id_lower in addr_normalized or addr_normalized in tile_id_lower:
+                _LOGGER.info("✅ Found matching Tile by address: %s", device.address)
+                found_device = device
+
+            # Check by name (existing logic)
+            if device.name and tile_id_lower[:8] in device.name.lower():
+                _LOGGER.info("✅ Found matching Tile by name: %s at %s", device.name, device.address)
+                found_device = device
+
         try:
-            devices = await BleakScanner.discover(
-                timeout=scan_timeout,
+            scanner = BleakScanner(
+                detection_callback=detection_callback,
                 service_uuids=[TILE_SERVICE_UUID],
             )
-            _LOGGER.info("📡 BLE scan complete: Found %d Tile devices nearby", len(devices))
 
-            # Log all found devices for debugging
-            _LOGGER.info("Devices found:")
-            for i, device in enumerate(devices, 1):
-                _LOGGER.info(
-                    "  [%d] name='%s', address=%s, rssi=%s",
-                    i,
-                    device.name or "N/A",
-                    device.address,
-                    getattr(device, 'rssi', 'N/A')
-                )
+            await scanner.start()
+            await asyncio.sleep(scan_timeout)
+            await scanner.stop()
 
-            for device in devices:
-                _LOGGER.debug(
-                    "  Device found: name=%s, address=%s, rssi=%s",
-                    device.name or "N/A",
-                    device.address,
-                    getattr(device, 'rssi', 'N/A')
-                )
+            _LOGGER.info("📡 BLE scan complete: Found %d Tile devices nearby", len(advertising_data_cache))
 
-                # Check by address
-                addr_normalized = device.address.lower().replace(":", "").replace("-", "")
-                if tile_id_lower in addr_normalized or addr_normalized in tile_id_lower:
-                    _LOGGER.info("✅ Found matching Tile by address: %s (RSSI: %s)", device.address, getattr(device, 'rssi', 'N/A'))
-                    self._device = device
-                    return device
+            if found_device:
+                _LOGGER.info("✅ Match found for Tile %s: %s (RSSI: %s)",
+                           self.tile_id,
+                           found_device.address,
+                           advertising_data_cache.get(found_device.address).rssi if found_device.address in advertising_data_cache else 'N/A')
+                self._device = found_device
+                return found_device
 
-                # Check by name if it contains tile ID
-                if device.name and tile_id_lower[:8] in device.name.lower():
-                    _LOGGER.info("✅ Found matching Tile by name: %s at %s (RSSI: %s)", device.name, device.address, getattr(device, 'rssi', 'N/A'))
-                    self._device = device
-                    return device
-
-            _LOGGER.warning("❌ Tile %s not found in BLE range after scanning %d devices", self.tile_id, len(devices))
+            _LOGGER.warning("❌ Tile %s not found in BLE range after scanning %d devices", self.tile_id, len(advertising_data_cache))
             return None
 
         except Exception as err:

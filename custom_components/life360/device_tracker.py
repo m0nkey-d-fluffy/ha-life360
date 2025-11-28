@@ -596,22 +596,26 @@ class Life360DeviceDeviceTracker(
 
         # Add Tile-specific BLE attributes if this is a Tile device
         if self._device_data.device_type == DeviceType.TILE:
-            # Get the circles/members coordinator to access tile caches
-            circles_coord = self.coordinator.hass.data[DOMAIN][
-                self.coordinator.config_entry.entry_id
-            ].circles_coordinator
+            try:
+                # Get the circles/members coordinator to access tile caches
+                circles_coord = self.coordinator.hass.data[DOMAIN][
+                    self.coordinator.config_entry.entry_id
+                ].circles_coordinator
 
-            # Get Tile BLE ID from cache
-            if tile_ble_id := circles_coord._tile_ble_id_cache.get(self._device_id):
-                attrs["tile_ble_id"] = tile_ble_id
+                # Get Tile BLE ID from cache
+                if tile_ble_id := circles_coord._tile_ble_id_cache.get(self._device_id):
+                    attrs["tile_ble_id"] = tile_ble_id
 
-                # Get MAC address from cache (keyed by BLE ID)
-                if mac_address := circles_coord._tile_mac_cache.get(tile_ble_id):
-                    attrs["tile_mac_address"] = mac_address
+                    # Get MAC address from cache (keyed by BLE ID)
+                    if mac_address := circles_coord._tile_mac_cache.get(tile_ble_id):
+                        attrs["tile_mac_address"] = mac_address
 
-                # Get authentication method from cache (keyed by BLE ID)
-                if auth_method := circles_coord._tile_auth_method_cache.get(tile_ble_id):
-                    attrs["tile_auth_method"] = auth_method
+                    # Get authentication method from cache (keyed by BLE ID)
+                    if auth_method := circles_coord._tile_auth_method_cache.get(tile_ble_id):
+                        attrs["tile_auth_method"] = auth_method
+            except Exception as err:
+                # Don't break attributes if cache access fails
+                _LOGGER.debug("Could not access Tile BLE cache for attributes: %s", err)
 
         return attrs
 

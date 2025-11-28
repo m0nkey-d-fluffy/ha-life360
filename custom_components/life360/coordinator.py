@@ -127,6 +127,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
 
         # Cache for Tile authentication keys (Life360 device ID -> auth key bytes)
         self._tile_auth_cache: dict[str, bytes] = {}
+        # Cache for Tile auth key sources (Tile BLE ID -> "life360" | "tile_api")
+        self._tile_auth_source_cache: dict[str, str] = {}
+        # Cache for Life360-sourced auth keys (for comparison with Tile API)
+        self._tile_auth_cache_life360: dict[str, bytes] = {}
         # Cache for Tile BLE device IDs (Life360 device ID -> BLE device ID)
         self._tile_ble_id_cache: dict[str, str] = {}
         # Cache for Tile MAC addresses (Tile BLE ID -> MAC address)
@@ -225,12 +229,25 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             # Already bytes
                             auth_key = auth_key_str
 
-                        # Cache by tile_id
+                        # Check if Life360 already provided an auth key for this Tile
+                        life360_auth_key = self._tile_auth_cache_life360.get(tile_id)
+                        if life360_auth_key and life360_auth_key != auth_key:
+                            _LOGGER.warning(
+                                "⚠️ AUTH KEY MISMATCH for %s:",
+                                tile_name,
+                            )
+                            _LOGGER.warning("   Tile API:  %s", auth_key.hex())
+                            _LOGGER.warning("   Life360:   %s", life360_auth_key.hex())
+                            _LOGGER.warning("   → Using Tile API auth key (more authoritative)")
+
+                        # Cache by tile_id - Tile API is the authoritative source
                         self._tile_auth_cache[tile_id] = auth_key
+                        self._tile_auth_source_cache[tile_id] = "tile_api"
 
                         # Also cache by tile_uuid if available
                         if tile_uuid:
                             self._tile_auth_cache[tile_uuid] = auth_key
+                            self._tile_auth_source_cache[tile_uuid] = "tile_api"
                             self._tile_ble_id_cache[tile_uuid] = tile_id
 
                         # Cache the BLE device ID
@@ -246,7 +263,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                             )
 
                         _LOGGER.info(
-                            "✅ Cached Tile BLE auth key: %s (id=%s, %d bytes)",
+                            "✅ Cached Tile BLE auth key from Tile API: %s (id=%s, %d bytes)",
                             tile_name,
                             tile_id[:8],
                             len(auth_key),
@@ -677,15 +694,32 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                                             try:
                                                 import base64
                                                 auth_key = base64.b64decode(auth_key_b64)
-                                                self._tile_auth_cache[device_id] = auth_key
+
+                                                # Store in Life360-specific cache for comparison
+                                                self._tile_auth_cache_life360[device_id] = auth_key
+                                                self._tile_auth_cache_life360[tile_device_id] = auth_key
+
+                                                # Only use Life360 auth if Tile API hasn't provided one
+                                                if tile_device_id not in self._tile_auth_cache:
+                                                    self._tile_auth_cache[device_id] = auth_key
+                                                    self._tile_auth_cache[tile_device_id] = auth_key
+                                                    self._tile_auth_source_cache[device_id] = "life360"
+                                                    self._tile_auth_source_cache[tile_device_id] = "life360"
+                                                    _LOGGER.debug(
+                                                        "✓ Cached BLE auth from Life360 locations: %s -> %s (%d bytes)",
+                                                        device_id[:20], tile_device_id[:8], len(auth_key)
+                                                    )
+                                                else:
+                                                    # Tile API already provided auth, compare them
+                                                    tile_api_auth = self._tile_auth_cache.get(tile_device_id)
+                                                    if tile_api_auth and tile_api_auth != auth_key:
+                                                        _LOGGER.info(
+                                                            "ℹ️ Life360 auth key differs from Tile API for %s (using Tile API)",
+                                                            tile_device_id[:8]
+                                                        )
+
                                                 self._tile_ble_id_cache[device_id] = tile_device_id
-                                                # Also cache by BLE device ID
-                                                self._tile_auth_cache[tile_device_id] = auth_key
                                                 self._tile_ble_id_cache[tile_device_id] = tile_device_id
-                                                _LOGGER.debug(
-                                                    "✓ Cached BLE auth from v5 locations: %s -> %s (%d bytes)",
-                                                    device_id[:20], tile_device_id[:8], len(auth_key)
-                                                )
                                             except Exception as err:
                                                 _LOGGER.debug("Failed to decode Tile auth key from locations: %s", err)
 
@@ -2006,13 +2040,15 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             _LOGGER.info("💡 Make sure the device is properly linked in Life360 and try the get_devices service")
             return False
 
-        _LOGGER.info("✓ Found Tile auth credentials, attempting BLE ring for %s", ble_device_id)
+        # Log which source the auth key came from
+        auth_source = self._tile_auth_source_cache.get(ble_device_id, "unknown")
+        _LOGGER.info("✓ Found Tile auth credentials from %s, attempting BLE ring for %s", auth_source, ble_device_id)
 
         # Create callback to store successful auth method
         def on_auth_success(tile_id: str, method_number: int) -> None:
             """Store the successful authentication method for this Tile."""
             self._tile_auth_method_cache[tile_id] = method_number
-            _LOGGER.info("💾 Cached auth method %d for Tile %s", method_number, tile_id[:8])
+            _LOGGER.info("💾 Cached auth method %d for Tile %s (auth source: %s)", method_number, tile_id[:8], auth_source)
 
         # Look up known auth method from cache
         known_auth_method = self._tile_auth_method_cache.get(ble_device_id)
@@ -2028,6 +2064,29 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             on_auth_success=on_auth_success,
             known_auth_method=known_auth_method,
         )
+
+        # If authentication failed and we have a Life360 auth key, try that as fallback
+        if not result and auth_source == "life360":
+            # Already tried Life360 key, no fallback
+            pass
+        elif not result:
+            # Try Life360 auth key as fallback if available
+            life360_auth_key = self._tile_auth_cache_life360.get(ble_device_id)
+            if life360_auth_key and life360_auth_key != auth_key:
+                _LOGGER.warning("⚠️ Tile API auth failed, trying Life360 auth key as fallback...")
+                result = await ring_tile_ble(
+                    ble_device_id,
+                    life360_auth_key,
+                    volume=TileVolume.MED,
+                    duration_seconds=30,
+                    scan_timeout=10.0,
+                    on_auth_success=lambda tid, method: self._tile_auth_method_cache.update({tid: method}),
+                    known_auth_method=known_auth_method,
+                )
+                if result:
+                    _LOGGER.info("✅ Life360 auth key worked! Updating cache to use Life360 source")
+                    self._tile_auth_cache[ble_device_id] = life360_auth_key
+                    self._tile_auth_source_cache[ble_device_id] = "life360"
 
         if result:
             _LOGGER.info("✅ Tile BLE ring successful for device %s", device_id)

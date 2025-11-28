@@ -755,7 +755,29 @@ class TileBleClient:
 
             # Check response
             if len(response) > 0:
-                _LOGGER.info("✅ Tile ring command sent successfully! Response: %s", response.hex())
+                _LOGGER.info("📥 Tile response to ring command: %s", response.hex())
+
+                # Parse response to check if it's an error
+                # Response format: MEP_HEADER + command + data
+                if len(response) >= 7:  # MEP header (5) + at least 2 bytes
+                    response_cmd = response[5] if len(response) > 5 else 0
+
+                    # Check if Tile responded with SONG error (command 0x05)
+                    # This indicates TRM is not supported on this Tile
+                    if response_cmd == 0x05:
+                        _LOGGER.error("❌ Tile does not support BLE ringing (TRM feature not available)")
+                        _LOGGER.error("   This is an older Tile model that requires cloud-based ringing")
+                        _LOGGER.error("   Response: %s (SONG error - TRM not supported)", response.hex())
+                        return False
+
+                    # Check for TRM success response (command 0x18, transaction type 0x01)
+                    if response_cmd == 0x18 and len(response) > 6:
+                        transaction_type = response[6]
+                        if transaction_type == 0x01:
+                            _LOGGER.info("✅ Tile confirmed ring command - should be ringing now!")
+                            return True
+
+                _LOGGER.info("✅ Tile ring command sent successfully!")
                 return True
 
             _LOGGER.warning("⚠️  No response to ring command (this may be normal)")

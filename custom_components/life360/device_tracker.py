@@ -593,6 +593,36 @@ class Life360DeviceDeviceTracker(
             if self._device_data.location.accuracy:
                 attrs[ATTR_GPS_ACCURACY] = self._device_data.location.accuracy
 
+        # Add Tile BLE information if this is a Tile device
+        if self._device_data.device_type == DeviceType.TILE:
+            # Access main coordinator (DeviceDataUpdateCoordinator -> CirclesMembersDataUpdateCoordinator)
+            main_coordinator = getattr(self.coordinator, "_coordinator", None)
+            if main_coordinator:
+                # Try to get Tile BLE ID from main coordinator's cache
+                if hasattr(main_coordinator, "_tile_ble_id_cache"):
+                    tile_ble_id = main_coordinator._tile_ble_id_cache.get(self._device_id)
+                    if tile_ble_id:
+                        attrs["tile_ble_id"] = tile_ble_id
+
+                        # Derive MAC address from Tile BLE ID
+                        try:
+                            from .tile_ble import TileBleClient
+                            # Create temporary client just to use MAC derivation method
+                            temp_client = TileBleClient(tile_ble_id, b"\x00" * 16)
+                            mac_address = temp_client._tile_id_to_mac(tile_ble_id)
+                            attrs["tile_mac_address"] = mac_address
+                        except Exception:
+                            pass
+
+                        # Check if auth key is available
+                        if hasattr(main_coordinator, "_tile_auth_cache"):
+                            has_auth = tile_ble_id in main_coordinator._tile_auth_cache
+                            attrs["tile_has_auth_key"] = has_auth
+                            if has_auth:
+                                auth_key = main_coordinator._tile_auth_cache[tile_ble_id]
+                                if isinstance(auth_key, bytes):
+                                    attrs["tile_auth_key_length"] = len(auth_key)
+
         return attrs
 
     @callback

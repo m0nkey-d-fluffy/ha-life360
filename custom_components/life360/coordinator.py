@@ -1981,31 +1981,46 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         """Get Tile authentication key and BLE device ID.
 
         Args:
-            device_id: Life360 device ID
+            device_id: Life360 device ID (can be full 16-char or short 8-char format)
 
         Returns:
             Tuple of (auth_key bytes, ble_device_id) or (None, None) if not found
         """
         _LOGGER.debug("Fetching Tile auth data for device %s in circle %s", device_id, cid)
 
-        # Check cache first
-        if device_id in self._tile_auth_cache and device_id in self._tile_ble_id_cache:
-            ble_id = self._tile_ble_id_cache[device_id]
-            _LOGGER.debug("✓ Found auth data in cache: device_id=%s, ble_id=%s", device_id, ble_id)
-            return self._tile_auth_cache[device_id], ble_id
+        # Check cache first - try both full device_id and short BLE ID format
+        # Life360 v6 API caches by both formats, but Tile API only caches by short ID
+        cache_keys_to_try = [device_id]
+
+        # If device_id is longer than 8 chars, also try the first 8 chars (short BLE ID format)
+        if len(device_id) > 8:
+            short_id = device_id[:8]
+            cache_keys_to_try.append(short_id)
+            _LOGGER.debug("Will try both full ID (%s) and short ID (%s) for cache lookup", device_id, short_id)
+
+        for lookup_id in cache_keys_to_try:
+            if lookup_id in self._tile_auth_cache and lookup_id in self._tile_ble_id_cache:
+                ble_id = self._tile_ble_id_cache[lookup_id]
+                auth_source = self._tile_auth_source_cache.get(lookup_id, "unknown")
+                _LOGGER.debug("✓ Found auth data in cache: lookup_id=%s, ble_id=%s, source=%s",
+                            lookup_id, ble_id, auth_source)
+                return self._tile_auth_cache[lookup_id], ble_id
 
         _LOGGER.debug("Auth data not in cache, fetching device metadata...")
         # Try to fetch metadata which will populate the cache
         await self._fetch_device_metadata(cid)
 
-        # Check cache again
-        if device_id in self._tile_auth_cache:
-            ble_id = self._tile_ble_id_cache.get(device_id)
-            _LOGGER.debug("✓ Auth data retrieved after metadata fetch: device_id=%s, ble_id=%s", device_id, ble_id or "None")
-            return (
-                self._tile_auth_cache[device_id],
-                ble_id,
-            )
+        # Check cache again with both formats
+        for lookup_id in cache_keys_to_try:
+            if lookup_id in self._tile_auth_cache:
+                ble_id = self._tile_ble_id_cache.get(lookup_id)
+                auth_source = self._tile_auth_source_cache.get(lookup_id, "unknown")
+                _LOGGER.debug("✓ Auth data retrieved after metadata fetch: lookup_id=%s, ble_id=%s, source=%s",
+                            lookup_id, ble_id or "None", auth_source)
+                return (
+                    self._tile_auth_cache[lookup_id],
+                    ble_id,
+                )
 
         _LOGGER.warning("❌ No auth data found for device %s after metadata fetch", device_id)
         _LOGGER.debug("Available devices in auth cache: %s", list(self._tile_auth_cache.keys()))

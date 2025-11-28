@@ -131,6 +131,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self._tile_ble_id_cache: dict[str, str] = {}
         # Cache for Tile MAC addresses (Tile BLE ID -> MAC address)
         self._tile_mac_cache: dict[str, str] = {}
+        # Cache for Tile BLE authentication methods (Tile BLE ID -> method number)
+        self._tile_auth_method_cache: dict[str, int] = {}
         # Cache for device names (Life360 device ID -> name)
         self._device_name_cache: dict[str, str] = {}
         # Cache for device avatars (Life360 device ID -> avatar URL)
@@ -2005,12 +2007,26 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             return False
 
         _LOGGER.info("✓ Found Tile auth credentials, attempting BLE ring for %s", ble_device_id)
+
+        # Create callback to store successful auth method
+        def on_auth_success(tile_id: str, method_number: int) -> None:
+            """Store the successful authentication method for this Tile."""
+            self._tile_auth_method_cache[tile_id] = method_number
+            _LOGGER.info("💾 Cached auth method %d for Tile %s", method_number, tile_id[:8])
+
+        # Look up known auth method from cache
+        known_auth_method = self._tile_auth_method_cache.get(ble_device_id)
+        if known_auth_method:
+            _LOGGER.info("⚡ Using cached auth method %d for faster authentication", known_auth_method)
+
         result = await ring_tile_ble(
             ble_device_id,
             auth_key,
             volume=TileVolume.MED,
             duration_seconds=30,
             scan_timeout=10.0,
+            on_auth_success=on_auth_success,
+            known_auth_method=known_auth_method,
         )
 
         if result:

@@ -618,6 +618,24 @@ class TileBleClient:
             expected_20 = node_tile_hmac(rand_t, self._rand_a, tdi_data[1:])  # TDI data without cmd
             _LOGGER.warning("🔧 Try 20 (randT+randA+TDI_data_no_cmd): %s", expected_20.hex())
 
+            # Try 21: CORRECT METHOD from research paper
+            # "sresT = HMAC-SHA256(randA + randT + tileId, interimAuthKey)[4:8]"
+            # Source: "Security and Privacy Analysis of Tile's Location Tracking Protocol"
+            tile_id_bytes = bytes.fromhex(self.tile_id) if isinstance(self.tile_id, str) else self.tile_id
+            hmac_input = self._rand_a + rand_t + tile_id_bytes
+            full_hmac = hmac.new(self.auth_key, hmac_input, hashlib.sha256).digest()
+            expected_21 = full_hmac[4:8]  # Bytes 4-7 (not 0-6!)
+            _LOGGER.warning("🔧 Try 21 (RESEARCH: randA+randT+tileId, bytes[4:8]): %s", expected_21.hex())
+            _LOGGER.warning("🔧    → tileId: %s (%d bytes)", tile_id_bytes.hex(), len(tile_id_bytes))
+            _LOGGER.warning("🔧    → HMAC input length: %d bytes", len(hmac_input))
+
+            # Try 22-23: Variations with different byte ranges
+            expected_22 = full_hmac[0:4]  # First 4 bytes
+            _LOGGER.warning("🔧 Try 22 (randA+randT+tileId, bytes[0:4]): %s", expected_22.hex())
+
+            expected_23 = full_hmac[4:11]  # Bytes 4-10 (7 bytes like others)
+            _LOGGER.warning("🔧 Try 23 (randA+randT+tileId, bytes[4:11]): %s", expected_23.hex())
+
             _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
 
             # Check which one matches
@@ -642,6 +660,9 @@ class TileBleClient:
                 (expected_18, "randA+randT+TDI[1:3]"),
                 (expected_19, "randA+auth_data[1:]"),
                 (expected_20, "randT+randA+TDI_data_no_cmd"),
+                (expected_21, "RESEARCH: randA+randT+tileId bytes[4:8]"),
+                (expected_22, "randA+randT+tileId bytes[0:4]"),
+                (expected_23, "randA+randT+tileId bytes[4:11]"),
             ]
 
             # If we have a known working method, try it first
@@ -672,7 +693,7 @@ class TileBleClient:
 
                         break
                 else:
-                    _LOGGER.error("❌ Tile signature mismatch! None of the 20 methods worked.")
+                    _LOGGER.error("❌ Tile signature mismatch! None of the 23 methods worked.")
                     _LOGGER.error("❌ DIAGNOSIS:")
                     _LOGGER.error("   1. Auth key source: Life360 API (base64 decoded)")
                     _LOGGER.error("   2. Auth key bytes: %s", self.auth_key.hex())

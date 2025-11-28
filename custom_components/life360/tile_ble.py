@@ -496,23 +496,40 @@ class TileBleClient:
 
             # Step 3: Verify Tile's signature
             _LOGGER.warning("🔧 Step 3: Verifying Tile's signature...")
-            # Note: node-tile uses HMAC with 32-byte padding
-            expected_sres_t = self._compute_sres_padded(rand_t, self._rand_a, self.auth_key)
-            _LOGGER.warning("🔧 Expected sresT: %s", expected_sres_t.hex())
 
-            if sres_t != expected_sres_t:
-                _LOGGER.error("❌ Tile signature mismatch!")
-                _LOGGER.error("   Expected: %s", expected_sres_t.hex())
-                _LOGGER.error("   Got:      %s", sres_t.hex())
-                # Try without padding as fallback
-                expected_sres_t_no_pad = self._compute_sres(rand_t, self._rand_a, self.auth_key)
-                _LOGGER.warning("🔧 Trying without padding: %s", expected_sres_t_no_pad.hex())
-                if sres_t == expected_sres_t_no_pad:
-                    _LOGGER.warning("✅ Signature verified (without padding)")
-                else:
-                    return False
+            # Try different HMAC calculations to find the correct one
+            _LOGGER.warning("🔧 Trying different HMAC combinations...")
+
+            # Try 1: randT + randA with padding (our current method)
+            expected_1 = self._compute_sres_padded(rand_t, self._rand_a, self.auth_key)
+            _LOGGER.warning("🔧 Try 1 (randT+randA padded): %s", expected_1.hex())
+
+            # Try 2: randA + randT with padding
+            expected_2 = self._compute_sres_padded(self._rand_a, rand_t, self.auth_key)
+            _LOGGER.warning("🔧 Try 2 (randA+randT padded): %s", expected_2.hex())
+
+            # Try 3: randT + randA without padding
+            expected_3 = self._compute_sres(rand_t, self._rand_a, self.auth_key)
+            _LOGGER.warning("🔧 Try 3 (randT+randA no pad): %s", expected_3.hex())
+
+            # Try 4: randA + randT without padding
+            expected_4 = self._compute_sres(self._rand_a, rand_t, self.auth_key)
+            _LOGGER.warning("🔧 Try 4 (randA+randT no pad): %s", expected_4.hex())
+
+            _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
+
+            # Check which one matches
+            if sres_t == expected_1:
+                _LOGGER.warning("✅ Signature verified! (randT+randA padded)")
+            elif sres_t == expected_2:
+                _LOGGER.warning("✅ Signature verified! (randA+randT padded)")
+            elif sres_t == expected_3:
+                _LOGGER.warning("✅ Signature verified! (randT+randA no pad)")
+            elif sres_t == expected_4:
+                _LOGGER.warning("✅ Signature verified! (randA+randT no pad)")
             else:
-                _LOGGER.warning("✅ Tile signature verified!")
+                _LOGGER.error("❌ Tile signature mismatch! None of the methods worked.")
+                return False
 
             # Step 4: Authentication complete
             self._authenticated = True

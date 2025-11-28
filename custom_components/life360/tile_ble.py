@@ -611,10 +611,58 @@ class TileBleClient:
             )
 
             _LOGGER.warning("✅ TDI-based authentication successful!")
+
+            # Step 5: Establish channel for subsequent commands
+            _LOGGER.warning("🔧 Step 4: Establishing communication channel...")
+            if not await self._establish_channel():
+                _LOGGER.error("❌ Channel establishment failed")
+                return False
+
+            _LOGGER.warning("✅ Channel established - ready for commands!")
             return True
 
         except Exception as err:
             _LOGGER.error("❌ Authentication error: %s", err, exc_info=True)
+            return False
+
+    async def _establish_channel(self) -> bool:
+        """Establish communication channel after authentication.
+
+        Based on BLE capture: sends command 0x12 (CHANNEL) with payload 0x13 (TDI).
+        Format: [channel_byte, command, payload, 4-byte-hmac]
+        Example: 02 12 13 e15b25de
+
+        Returns:
+            True if channel established successfully
+        """
+        try:
+            CHANNEL_BYTE = 0x02
+            CHANNEL_CMD = 0x12  # 18 decimal
+            CHANNEL_PAYLOAD = 0x13  # 19 decimal (TDI)
+
+            # Build command: channel_byte + command + payload
+            cmd_data = bytes([CHANNEL_BYTE, CHANNEL_CMD, CHANNEL_PAYLOAD])
+
+            # Calculate HMAC signature using channel key
+            # Signature is over: command + payload
+            sig_data = bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: cmd_data + signature
+            cmd = cmd_data + signature
+
+            _LOGGER.warning("🔧 Channel command: %s (length=%d)", cmd.hex(), len(cmd))
+            response = await self._send_command(cmd)
+
+            if len(response) > 0:
+                _LOGGER.warning("🔧 Channel response: %s", response.hex())
+                return True
+
+            _LOGGER.error("❌ No response to channel establishment")
+            return False
+
+        except Exception as err:
+            _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
             return False
 
     def _compute_sres(
@@ -681,30 +729,46 @@ class TileBleClient:
         volume: TileVolume = TileVolume.MED,
         duration_seconds: int = 30,
     ) -> bytes:
-        """Build the ring/find command using TRM (Tile Ring Module).
+        """Build the ring/find command using channel-based SONG command.
+
+        Based on BLE capture: 02 05 02 01 03 1e [4-byte-hmac]
+        - Channel byte: 0x02
+        - Command: 0x05 (SONG)
+        - Transaction: 0x02 (RING)
+        - Volume type: 0x01
+        - Volume level: volume value (1=LOW, 2=MED, 3=HIGH)
+        - Duration: seconds
+        - HMAC: 4-byte signature
 
         Args:
-            volume: Ring volume level (unused - Tiles have fixed volume)
+            volume: Ring volume level
             duration_seconds: How long to ring
 
         Returns:
-            Command bytes (MEP-wrapped)
+            Command bytes (channel-based with HMAC)
         """
-        # MEP header for connectionless commands
-        MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+        CHANNEL_BYTE = 0x02
+        SONG_CMD = 0x05
+        RING_TRANSACTION = 0x02
+        VOLUME_TYPE = 0x01
 
-        # Convert duration to 4-byte little-endian (Android BytesUtils.iB)
-        import struct
-        duration_bytes = struct.pack('<I', duration_seconds)  # Little-endian 32-bit unsigned int
+        # Build command data (without HMAC yet)
+        cmd_data = bytes([
+            CHANNEL_BYTE,
+            SONG_CMD,
+            RING_TRANSACTION,
+            VOLUME_TYPE,
+            volume.value,  # Volume level (1-3)
+            duration_seconds,  # Duration in seconds
+        ])
 
-        # TRM (Tile Ring Module) command format:
-        # Command: 0x18 (24 decimal)
-        # Transaction type: 0x01 (START_RING)
-        # Data: 4-byte duration in little-endian
-        cmd_payload = bytes([ToaCommand.TRM, TrmType.START_RING]) + duration_bytes
+        # Calculate HMAC signature using channel key
+        # Signature is over: command + transaction + volume_type + volume + duration
+        sig_data = bytes([SONG_CMD, RING_TRANSACTION, VOLUME_TYPE, volume.value, duration_seconds])
+        signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
-        # Wrap in MEP format
-        cmd = MEP_CONNECTIONLESS + cmd_payload
+        # Final command: cmd_data + signature
+        cmd = cmd_data + signature
         return cmd
 
     def _build_stop_command(self) -> bytes:
@@ -755,7 +819,29 @@ class TileBleClient:
 
             # Check response
             if len(response) > 0:
-                _LOGGER.info("✅ Tile ring command sent successfully! Response: %s", response.hex())
+                _LOGGER.info("📥 Tile response to ring command: %s", response.hex())
+
+                # Parse response to check if it's an error
+                # Response format: MEP_HEADER + command + data
+                if len(response) >= 7:  # MEP header (5) + at least 2 bytes
+                    response_cmd = response[5] if len(response) > 5 else 0
+
+                    # Check if Tile responded with SONG error (command 0x05)
+                    # This indicates TRM is not supported on this Tile
+                    if response_cmd == 0x05:
+                        _LOGGER.error("❌ Tile does not support BLE ringing (TRM feature not available)")
+                        _LOGGER.error("   This is an older Tile model that requires cloud-based ringing")
+                        _LOGGER.error("   Response: %s (SONG error - TRM not supported)", response.hex())
+                        return False
+
+                    # Check for TRM success response (command 0x18, transaction type 0x01)
+                    if response_cmd == 0x18 and len(response) > 6:
+                        transaction_type = response[6]
+                        if transaction_type == 0x01:
+                            _LOGGER.info("✅ Tile confirmed ring command - should be ringing now!")
+                            return True
+
+                _LOGGER.info("✅ Tile ring command sent successfully!")
                 return True
 
             _LOGGER.warning("⚠️  No response to ring command (this may be normal)")

@@ -721,17 +721,25 @@ class TileBleClient:
     ) -> bytes:
         """Derive channel encryption key from authentication values.
 
+        Based on Android CryptoUtils: channel key is first 4 bytes of
+        HMAC-SHA256(authKey, randA_padded + randT_padded).
+
         Args:
-            rand_a: Our random value
-            rand_t: Tile's random value
-            auth_key: Authentication key
+            rand_a: Our random value (14 bytes)
+            rand_t: Tile's random value (10 bytes)
+            auth_key: Authentication key (16 bytes)
 
         Returns:
-            16-byte channel key
+            4-byte channel key
         """
-        msg = rand_a + rand_t + b"channel"
-        h = hmac.new(auth_key, msg, hashlib.sha256)
-        return h.digest()[:16]
+        # Pad each value to 16 bytes, then concatenate (same as sresT calculation)
+        rand_a_16 = rand_a + b'\x00' * (16 - len(rand_a))
+        rand_t_16 = rand_t + b'\x00' * (16 - len(rand_t))
+        message_32 = rand_a_16 + rand_t_16
+
+        # HMAC-SHA256, take first 4 bytes as channel key (bytes 4-7 are sresT)
+        h = hmac.new(auth_key, message_32, hashlib.sha256)
+        return h.digest()[:4]
 
     def _build_ring_command(
         self,

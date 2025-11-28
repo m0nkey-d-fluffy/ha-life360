@@ -60,7 +60,7 @@ class ToaCommand(IntEnum):
     TCU = 11
     TFC = 12
     TKA = 13
-    TRM = 14
+    TRM = 24  # 0x18 - Tile Ring Module (the CORRECT ring command!)
     ADVINT = 15
 
 
@@ -69,6 +69,13 @@ class SongType(IntEnum):
     STOP = 0
     FIND = 1
     RING = 2
+
+
+class TrmType(IntEnum):
+    """TRM (Tile Ring Module) transaction types."""
+    START_RING = 1  # Start ringing
+    STOP_RING = 2   # Stop ringing
+    READ = 3        # Read ring status
 
 
 @dataclass
@@ -674,10 +681,10 @@ class TileBleClient:
         volume: TileVolume = TileVolume.MED,
         duration_seconds: int = 30,
     ) -> bytes:
-        """Build the ring/find command.
+        """Build the ring/find command using TRM (Tile Ring Module).
 
         Args:
-            volume: Ring volume level
+            volume: Ring volume level (unused - Tiles have fixed volume)
             duration_seconds: How long to ring
 
         Returns:
@@ -686,22 +693,22 @@ class TileBleClient:
         # MEP header for connectionless commands
         MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-        # TOA Song command format (without MEP header):
-        # [SONG, transaction_type, volume_type, volume_level, duration?]
-        cmd_payload = bytes([
-            ToaCommand.SONG,
-            SongType.RING,  # Ring transaction type
-            1,  # Volume type indicator
-            volume.value,  # Volume level (1=LOW, 2=MED, 3=HIGH)
-            duration_seconds,  # Duration in seconds
-        ])
+        # Convert duration to 4-byte little-endian (Android BytesUtils.iB)
+        import struct
+        duration_bytes = struct.pack('<I', duration_seconds)  # Little-endian 32-bit unsigned int
 
-        # Wrap in MEP format (same as auth/TDI commands)
+        # TRM (Tile Ring Module) command format:
+        # Command: 0x18 (24 decimal)
+        # Transaction type: 0x01 (START_RING)
+        # Data: 4-byte duration in little-endian
+        cmd_payload = bytes([ToaCommand.TRM, TrmType.START_RING]) + duration_bytes
+
+        # Wrap in MEP format
         cmd = MEP_CONNECTIONLESS + cmd_payload
         return cmd
 
     def _build_stop_command(self) -> bytes:
-        """Build the stop ring command.
+        """Build the stop ring command using TRM (Tile Ring Module).
 
         Returns:
             Command bytes (MEP-wrapped)
@@ -709,11 +716,8 @@ class TileBleClient:
         # MEP header for connectionless commands
         MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-        # TOA Song STOP command
-        cmd_payload = bytes([
-            ToaCommand.SONG,
-            SongType.STOP,  # Stop
-        ])
+        # TRM STOP_RING command (no data payload needed)
+        cmd_payload = bytes([ToaCommand.TRM, TrmType.STOP_RING])
 
         # Wrap in MEP format
         cmd = MEP_CONNECTIONLESS + cmd_payload

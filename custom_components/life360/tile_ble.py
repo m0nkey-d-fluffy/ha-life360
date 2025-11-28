@@ -632,8 +632,11 @@ class TileBleClient:
         Format: [channel_byte, command, payload, 4-byte-hmac]
         Example: 02 12 13 e15b25de
 
+        NOTE: Channel establishment appears to be a "fire and forget" command that
+        doesn't require a response from the Tile.
+
         Returns:
-            True if channel established successfully
+            True if channel command sent successfully
         """
         try:
             CHANNEL_BYTE = 0x02
@@ -651,15 +654,21 @@ class TileBleClient:
             # Final command: cmd_data + signature
             cmd = cmd_data + signature
 
-            _LOGGER.warning("🔧 Channel command: %s (length=%d)", cmd.hex(), len(cmd))
-            response = await self._send_command(cmd)
+            _LOGGER.warning("🔧 Channel establishment command: %s (length=%d)", cmd.hex(), len(cmd))
 
-            if len(response) > 0:
-                _LOGGER.warning("🔧 Channel response: %s", response.hex())
-                return True
+            # Send the command directly without waiting for response
+            # Channel establishment is a "fire and forget" command
+            if not self._client or not self._client.is_connected:
+                raise RuntimeError("Not connected to Tile")
 
-            _LOGGER.error("❌ No response to channel establishment")
-            return False
+            _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ Channel establishment command sent (no response expected)")
+
+            # Give the Tile a moment to process the channel setup
+            await asyncio.sleep(0.2)
+
+            return True
 
         except Exception as err:
             _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)

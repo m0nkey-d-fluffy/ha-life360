@@ -122,10 +122,15 @@ class TileBleClient:
         self._device: BLEDevice | None = None
         self._response_event = asyncio.Event()
         self._response_data: bytes = b""
+        self._response_queue: asyncio.Queue = asyncio.Queue()
         self._authenticated = False
         self._rand_a: bytes = b""
         self._rand_t: bytes = b""
         self._channel_key: bytes = b""
+        self._channel_byte: int = 0
+        self._channel_data: bytes = b""
+        self._connection_id: bytes = MEP_CONNECTION_ID
+        self._tx_counter: int = 0
 
     def _tile_id_to_mac(self, tile_id: str) -> str:
         """Convert Tile ID to expected BLE MAC address.
@@ -378,6 +383,16 @@ class TileBleClient:
         _LOGGER.warning("🔧 Tile response received from %s: %s (length=%d)", sender, data.hex(), len(data))
         self._response_data = data
         self._response_event.set()
+        # Also put in queue for channel operations
+        try:
+            self._response_queue.put_nowait(data)
+        except asyncio.QueueFull:
+            _LOGGER.warning("Response queue full, discarding oldest response")
+            try:
+                self._response_queue.get_nowait()  # Remove oldest
+                self._response_queue.put_nowait(data)  # Add new
+            except:
+                pass
 
     async def _send_command(self, data: bytes) -> bytes:
         """Send command and wait for response.
@@ -605,15 +620,21 @@ class TileBleClient:
             self._authenticated = True
             self._rand_t = rand_t
 
-            # Derive channel key for subsequent commands
-            self._channel_key = self._derive_channel_key(
-                self._rand_a, rand_t, self.auth_key
-            )
-
             _LOGGER.warning("✅ TDI-based authentication successful!")
 
-            # Step 5: Establish channel for subsequent commands
-            _LOGGER.warning("🔧 Step 4: Establishing communication channel...")
+            # Step 5: Open channel to get channel data for encryption key
+            _LOGGER.warning("🔧 Step 4: Opening communication channel...")
+            channel_data = await self._open_channel()
+            if not channel_data:
+                _LOGGER.error("❌ Channel open failed")
+                return False
+
+            # Step 6: Derive channel encryption key from channel data
+            self._channel_key = self._derive_channel_encryption_key(channel_data)
+            _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
+
+            # Step 7: Establish channel for subsequent commands
+            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
             if not await self._establish_channel():
                 _LOGGER.error("❌ Channel establishment failed")
                 return False
@@ -625,8 +646,73 @@ class TileBleClient:
             _LOGGER.error("❌ Authentication error: %s", err, exc_info=True)
             return False
 
+    async def _open_channel(self) -> dict[str, any] | None:
+        """Open communication channel after authentication.
+
+        Sends CHANNEL OPEN command (0x10) with randA as payload.
+        Receives channel_byte and channel_data needed for encryption key derivation.
+
+        Based on BLE capture frame 287-288:
+        - Request: 00f3c7d22d10 + randA (14 bytes)
+        - Response: 00f3c7d22d12 + channel_byte (1 byte) + channel_data (13 bytes)
+
+        Returns:
+            Dict with 'channel_byte' and 'channel_data', or None on failure
+        """
+        try:
+            CHANNEL_OPEN_CMD = 0x10  # 16 decimal
+
+            # Build MEP connectionless command
+            cmd = MEP_CONNECTION_ID + bytes([CHANNEL_OPEN_CMD]) + self._rand_a
+
+            _LOGGER.warning("🔧 Channel open command: %s (length=%d)", cmd.hex(), len(cmd))
+            _LOGGER.warning("   Connection ID: %s", MEP_CONNECTION_ID.hex())
+            _LOGGER.warning("   Command: 0x%02x", CHANNEL_OPEN_CMD)
+            _LOGGER.warning("   RandA: %s", self._rand_a.hex())
+
+            if not self._client or not self._client.is_connected:
+                raise RuntimeError("Not connected to Tile")
+
+            # Send command and wait for response
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("🔧 Channel open command sent, waiting for response...")
+
+            response = await asyncio.wait_for(
+                self._response_queue.get(), timeout=5.0
+            )
+
+            _LOGGER.warning("🔧 Channel open response: %s (length=%d)", response.hex(), len(response))
+
+            # Parse response: MEP_ID + response_byte + channel_byte + channel_data
+            if len(response) < 7:  # Min: 4 (MEP) + 1 (response) + 1 (channel) + 1 (data)
+                raise ValueError(f"Response too short: {len(response)} bytes")
+
+            # Verify MEP header and response byte
+            if response[:5] != MEP_CONNECTION_ID + bytes([0x12]):
+                raise ValueError(f"Invalid response header: {response[:5].hex()}")
+
+            # Extract channel byte and channel data
+            channel_byte = response[5]
+            channel_data = response[6:]
+
+            _LOGGER.warning("✅ Channel opened successfully!")
+            _LOGGER.warning("   Channel byte: 0x%02x", channel_byte)
+            _LOGGER.warning("   Channel data: %s (%d bytes)", channel_data.hex(), len(channel_data))
+
+            return {
+                "channel_byte": channel_byte,
+                "channel_data": channel_data,
+            }
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("❌ Channel open timeout (5 seconds)")
+            return None
+        except Exception as err:
+            _LOGGER.error("❌ Channel open error: %s", err, exc_info=True)
+            return None
+
     async def _establish_channel(self) -> bool:
-        """Establish communication channel after authentication.
+        """Establish communication channel after opening.
 
         Based on BLE capture: sends command 0x12 (CHANNEL) with payload 0x13 (TDI).
         Format: [channel_byte, command, payload, 4-byte-hmac]
@@ -639,22 +725,28 @@ class TileBleClient:
             True if channel command sent successfully
         """
         try:
-            CHANNEL_BYTE = 0x02
             CHANNEL_CMD = 0x12  # 18 decimal
             CHANNEL_PAYLOAD = 0x13  # 19 decimal (TDI)
 
             # Build command: channel_byte + command + payload
-            cmd_data = bytes([CHANNEL_BYTE, CHANNEL_CMD, CHANNEL_PAYLOAD])
+            cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
 
-            # Calculate HMAC signature using channel key
-            # Signature is over: command + payload
-            sig_data = bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
+            # Calculate HMAC signature using channel encryption key
+            # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
+            self._tx_counter += 1
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
+            )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
             # Final command: cmd_data + signature
             cmd = cmd_data + signature
 
             _LOGGER.warning("🔧 Channel establishment command: %s (length=%d)", cmd.hex(), len(cmd))
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   HMAC data: %s", sig_data.hex())
+            _LOGGER.warning("   Signature: %s", signature.hex())
 
             # Send the command directly without waiting for response
             # Channel establishment is a "fire and forget" command
@@ -716,30 +808,67 @@ class TileBleClient:
         h = hmac.new(key, msg, hashlib.sha256)
         return h.digest()[:8]
 
-    def _derive_channel_key(
-        self, rand_a: bytes, rand_t: bytes, auth_key: bytes
-    ) -> bytes:
-        """Derive channel encryption key from authentication values.
+    def _derive_channel_encryption_key(self, channel_data: dict) -> bytes:
+        """Derive channel encryption key from channel opening data.
 
-        Based on Android CryptoUtils: channel key is first 4 bytes of
-        HMAC-SHA256(authKey, randA_padded + randT_padded).
+        Based on Android BaseBleGattCallback.Il() when HR() is true:
+        Returns HMAC-SHA256(authKey, randA + channel_data + channel_byte + connection_id)[:16]
+
+        This is the key used for HMAC signatures on all channel commands.
 
         Args:
-            rand_a: Our random value (14 bytes)
-            rand_t: Tile's random value (10 bytes)
-            auth_key: Authentication key (16 bytes)
+            channel_data: Dict with 'channel_byte' and 'channel_data' from channel open response
 
         Returns:
-            4-byte channel key
+            16-byte channel encryption key
         """
-        # Pad each value to 16 bytes, then concatenate (same as sresT calculation)
-        rand_a_16 = rand_a + b'\x00' * (16 - len(rand_a))
-        rand_t_16 = rand_t + b'\x00' * (16 - len(rand_t))
-        message_32 = rand_a_16 + rand_t_16
+        # Store channel info for later use
+        self._channel_byte = channel_data["channel_byte"]
+        self._channel_data = channel_data["channel_data"]
 
-        # HMAC-SHA256, take first 4 bytes as channel key (bytes 4-7 are sresT)
-        h = hmac.new(auth_key, message_32, hashlib.sha256)
-        return h.digest()[:4]
+        # Build message: randA + channel_data + channel_byte + connection_id
+        message = (
+            self._rand_a +
+            self._channel_data +
+            bytes([self._channel_byte]) +
+            self._connection_id
+        )
+
+        _LOGGER.warning("🔧 Deriving channel encryption key:")
+        _LOGGER.warning("   RandA (%d): %s", len(self._rand_a), self._rand_a.hex())
+        _LOGGER.warning("   Channel data (%d): %s", len(self._channel_data), self._channel_data.hex())
+        _LOGGER.warning("   Channel byte: 0x%02x", self._channel_byte)
+        _LOGGER.warning("   Connection ID (%d): %s", len(self._connection_id), self._connection_id.hex())
+        _LOGGER.warning("   Total message (%d): %s", len(message), message.hex())
+
+        # HMAC-SHA256, take first 16 bytes as channel encryption key
+        h = hmac.new(self.auth_key, message, hashlib.sha256)
+        return h.digest()[:16]
+
+    def _build_hmac_message(self, counter: int, cmd_data: bytes) -> bytes:
+        """Build message for HMAC signature calculation.
+
+        Based on Android ToaProcessor.d() and CryptoUtils.b():
+        HMAC message = counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
+
+        Args:
+            counter: Transaction counter
+            cmd_data: Command data (command byte + payload)
+
+        Returns:
+            32-byte message for HMAC calculation
+        """
+        # Convert counter to 4-byte little-endian (BytesUtils.au())
+        counter_bytes = counter.to_bytes(4, byteorder='little')
+
+        # Build message: counter + {1} + length + data
+        message = counter_bytes + bytes([1]) + bytes([len(cmd_data)]) + cmd_data
+
+        # Pad to 32 bytes
+        if len(message) < 32:
+            message = message + bytes(32 - len(message))
+
+        return message
 
     def _build_ring_command(
         self,
@@ -764,14 +893,13 @@ class TileBleClient:
         Returns:
             Command bytes (channel-based with HMAC)
         """
-        CHANNEL_BYTE = 0x02
         SONG_CMD = 0x05
         RING_TRANSACTION = 0x02
         VOLUME_TYPE = 0x01
 
-        # Build command data (without HMAC yet)
-        cmd_data = bytes([
-            CHANNEL_BYTE,
+        # Build command data (without channel byte or HMAC)
+        # This is what goes into the HMAC calculation
+        cmd_payload = bytes([
             SONG_CMD,
             RING_TRANSACTION,
             VOLUME_TYPE,
@@ -779,13 +907,25 @@ class TileBleClient:
             duration_seconds,  # Duration in seconds
         ])
 
-        # Calculate HMAC signature using channel key
-        # Signature is over: command + transaction + volume_type + volume + duration
-        sig_data = bytes([SONG_CMD, RING_TRANSACTION, VOLUME_TYPE, volume.value, duration_seconds])
+        # Increment TX counter
+        self._tx_counter += 1
+
+        # Calculate HMAC signature using channel encryption key
+        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
+        sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
         signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
-        # Final command: cmd_data + signature
-        cmd = cmd_data + signature
+        # Build final command: channel_byte + cmd_payload + signature
+        cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+        _LOGGER.warning("🔧 Ring command built:")
+        _LOGGER.warning("   TX counter: %d", self._tx_counter)
+        _LOGGER.warning("   Channel byte: 0x%02x", self._channel_byte)
+        _LOGGER.warning("   Command payload: %s", cmd_payload.hex())
+        _LOGGER.warning("   HMAC message: %s", sig_data.hex())
+        _LOGGER.warning("   Signature: %s", signature.hex())
+        _LOGGER.warning("   Final command: %s", cmd.hex())
+
         return cmd
 
     def _build_stop_command(self) -> bytes:

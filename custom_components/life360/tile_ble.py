@@ -681,29 +681,42 @@ class TileBleClient:
             duration_seconds: How long to ring
 
         Returns:
-            Command bytes
+            Command bytes (MEP-wrapped)
         """
-        # TOA Song command format:
+        # MEP header for connectionless commands
+        MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+
+        # TOA Song command format (without MEP header):
         # [SONG, transaction_type, volume_type, volume_level, duration?]
-        cmd = bytes([
+        cmd_payload = bytes([
             ToaCommand.SONG,
             SongType.RING,  # Ring transaction type
             1,  # Volume type indicator
             volume.value,  # Volume level (1=LOW, 2=MED, 3=HIGH)
             duration_seconds,  # Duration in seconds
         ])
+
+        # Wrap in MEP format (same as auth/TDI commands)
+        cmd = MEP_CONNECTIONLESS + cmd_payload
         return cmd
 
     def _build_stop_command(self) -> bytes:
         """Build the stop ring command.
 
         Returns:
-            Command bytes
+            Command bytes (MEP-wrapped)
         """
-        cmd = bytes([
+        # MEP header for connectionless commands
+        MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+
+        # TOA Song STOP command
+        cmd_payload = bytes([
             ToaCommand.SONG,
             SongType.STOP,  # Stop
         ])
+
+        # Wrap in MEP format
+        cmd = MEP_CONNECTIONLESS + cmd_payload
         return cmd
 
     async def ring(

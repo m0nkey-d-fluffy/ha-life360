@@ -521,98 +521,34 @@ class TileBleClient:
                 _LOGGER.warning("🔧 Extracted channel_prefix: %s", channel_prefix.hex())
                 _LOGGER.warning("🔧 Extracted channel_data: %s", channel_data.hex())
 
-            # Android CryptoUtils.b() method: concatenates buffers and pads to exactly 32 bytes
-            def android_hmac(*buffers):
-                """Replicate Android CryptoUtils.b() logic."""
-                # Concatenate all buffers
-                total_len = sum(len(b) for b in buffers)
-                if total_len > 32:
-                    raise ValueError(f"Input length {total_len} > 32")
+            # Android CryptoUtils.b() method with CORRECT 16-byte padding per value
+            # CRITICAL: Android uses BytesUtils.e() to pad EACH value to 16 bytes BEFORE concatenating!
+            # See TileBleGattCallback.java line 647-649:
+            #   this.bcT = BytesUtils.e(authTransaction.KN(), 16);  // Pad randT to 16 bytes
+            #   this.bcS = BytesUtils.e(this.bcS, 16);              // Pad randA to 16 bytes
+            # Then CryptoUtils.b() concatenates them: 16 + 16 = 32 bytes exactly
 
-                # Create 32-byte buffer (zero-padded)
-                padded = bytearray(32)
-                offset = 0
-                for buf in buffers:
-                    padded[offset:offset+len(buf)] = buf
-                    offset += len(buf)
+            # Pad randA to 16 bytes (Java Arrays.copyOf behavior)
+            rand_a_16 = self._rand_a + b'\x00' * (16 - len(self._rand_a))
+            # Pad randT to 16 bytes
+            rand_t_16 = rand_t + b'\x00' * (16 - len(rand_t))
+            # Concatenate: 16 + 16 = 32 bytes
+            message_32 = rand_a_16 + rand_t_16
 
-                # Return full HMAC digest (caller extracts needed bytes)
-                return hmac.new(self.auth_key, bytes(padded), hashlib.sha256).digest()
-
-            # Try 1: Android CryptoUtils.a() - THE CORRECT METHOD!
-            # Used in TilesManager.java line 1853 for existing devices
-            # CryptoUtils.a() calls b(authKey, randA, randT) and extracts bytes [4:8]
-            full_hmac_1 = android_hmac(self._rand_a, rand_t)
+            # Calculate HMAC with the correctly padded 32-byte message
+            full_hmac_1 = hmac.new(self.auth_key, message_32, hashlib.sha256).digest()
             expected_1 = full_hmac_1[4:8]  # Extract bytes 4-7 (4 bytes)
-            _LOGGER.warning("🔧 Try 1 (ANDROID: randA+randT pad32 [4:8]): %s", expected_1.hex())
+            _LOGGER.warning("🔧 Try 1 (ANDROID CORRECT: randA→16 + randT→16 [4:8]): %s", expected_1.hex())
+            _LOGGER.warning("   randA (14→16): %s", rand_a_16.hex())
+            _LOGGER.warning("   randT (10→16): %s", rand_t_16.hex())
             _LOGGER.warning("   Full HMAC: %s", full_hmac_1.hex())
-
-            # Try 2: Reverse order (just in case)
-            full_hmac_2 = android_hmac(rand_t, self._rand_a)
-            expected_2 = full_hmac_2[4:8]
-            _LOGGER.warning("🔧 Try 2 (ANDROID: randT+randA pad32 [4:8]): %s", expected_2.hex())
-
-            # Try 3: Different byte ranges from Method 1
-            expected_3 = full_hmac_1[0:4]  # First 4 bytes
-            _LOGGER.warning("🔧 Try 3 (ANDROID: randA+randT pad32 [0:4]): %s", expected_3.hex())
-
-            # Try 4: Extract bytes [8:12] (another 4-byte range)
-            expected_4 = full_hmac_1[8:12]
-            _LOGGER.warning("🔧 Try 4 (ANDROID: randA+randT pad32 [8:12]): %s", expected_4.hex())
-
-            # Try 5: Truncate randT to 8 bytes (some Tiles might do this)
-            rand_t_8 = rand_t[:8] if len(rand_t) > 8 else rand_t
-            full_hmac_5 = android_hmac(self._rand_a, rand_t_8)
-            expected_5 = full_hmac_5[4:8]
-            _LOGGER.warning("🔧 Try 5 (ANDROID: randA+randT[0:8] pad32 [4:8]): %s", expected_5.hex())
-
-            # Placeholder for additional methods (keep empty for now)
-            expected_6 = b""
-            expected_7 = b""
-            expected_8 = b""
-            expected_9 = b""
-            expected_10 = b""
-            expected_11 = b""
-            expected_12 = b""
-            expected_13 = b""
-            expected_14 = b""
-            expected_15 = b""
-            expected_16 = b""
-            expected_17 = b""
-            expected_18 = b""
-            expected_19 = b""
-            expected_20 = b""
-            expected_21 = b""
-            expected_22 = b""
-            expected_23 = b""
 
             _LOGGER.warning("🔧 Tile sent sresT: %s (%d bytes)", sres_t.hex(), len(sres_t))
 
-            # Check which one matches
+            # Verify the signature matches
+            # Method 1 is the CORRECT method based on Android app decompilation
             expected_list = [
-                (expected_1, "ANDROID CryptoUtils.a: pad32(randA+randT)[4:8]"),
-                (expected_2, "ANDROID reverse: pad32(randT+randA)[4:8]"),
-                (expected_3, "ANDROID alt range: pad32(randA+randT)[0:4]"),
-                (expected_4, "ANDROID alt range: pad32(randA+randT)[8:12]"),
-                (expected_5, "ANDROID w/ randT truncated: pad32(randA+randT[0:8])[4:8]"),
-                (expected_6, ""),
-                (expected_7, ""),
-                (expected_8, ""),
-                (expected_9, ""),
-                (expected_10, ""),
-                (expected_11, ""),
-                (expected_12, ""),
-                (expected_13, ""),
-                (expected_14, ""),
-                (expected_15, ""),
-                (expected_16, ""),
-                (expected_17, ""),
-                (expected_18, ""),
-                (expected_19, ""),
-                (expected_20, ""),
-                (expected_21, ""),
-                (expected_22, ""),
-                (expected_23, ""),
+                (expected_1, "ANDROID CORRECT: randA→16 + randT→16, HMAC[4:8]"),
             ]
 
             # If we have a known working method, try it first

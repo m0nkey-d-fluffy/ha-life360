@@ -537,6 +537,28 @@ class TileBleClient:
             expected_8 = hmac.new(self.auth_key, msg8, hashlib.sha256).digest()[:7]
             _LOGGER.warning("🔧 Try 8 (randA+randT, first 7 bytes): %s", expected_8.hex())
 
+            # Try 9: Test if auth key needs base64 decoding (node-tile uses base64-encoded keys)
+            import base64
+            try:
+                # The auth key might be base64-encoded
+                auth_key_b64_decoded = base64.b64decode(self.auth_key.hex())
+                _LOGGER.warning("🔧 Auth key (base64 decoded from hex): %s (length=%d)",
+                               auth_key_b64_decoded.hex(), len(auth_key_b64_decoded))
+
+                # Try HMAC with base64-decoded auth key
+                msg9 = self._rand_a + rand_t
+                expected_9 = hmac.new(auth_key_b64_decoded, msg9, hashlib.sha256).digest()[:7]
+                _LOGGER.warning("🔧 Try 9 (randA+randT with b64 auth): %s", expected_9.hex())
+
+                # Also try the reverse order
+                msg10 = rand_t + self._rand_a
+                expected_10 = hmac.new(auth_key_b64_decoded, msg10, hashlib.sha256).digest()[:7]
+                _LOGGER.warning("🔧 Try 10 (randT+randA with b64 auth): %s", expected_10.hex())
+            except Exception as e:
+                _LOGGER.warning("🔧 Base64 decode failed: %s", e)
+                expected_9 = b""
+                expected_10 = b""
+
             _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
 
             # Check which one matches
@@ -549,6 +571,8 @@ class TileBleClient:
                 (expected_6, "randA+randT+MEP padded"),
                 (expected_7, "randT+randA first 7"),
                 (expected_8, "randA+randT first 7"),
+                (expected_9, "randA+randT with b64 auth"),
+                (expected_10, "randT+randA with b64 auth"),
             ]
 
             for i, (expected, desc) in enumerate(expected_list, 1):
@@ -556,7 +580,7 @@ class TileBleClient:
                     _LOGGER.warning("✅ Signature verified! Method %d: %s", i, desc)
                     break
             else:
-                _LOGGER.error("❌ Tile signature mismatch! None of the 8 methods worked.")
+                _LOGGER.error("❌ Tile signature mismatch! None of the 10 methods worked.")
                 return False
 
             # Step 4: Authentication complete

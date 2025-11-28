@@ -6,6 +6,9 @@ and BLE authentication credentials, independent of Life360.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import uuid
 from typing import Any
@@ -19,6 +22,7 @@ TILE_API_BASE = "https://production.tile-api.com/api/v1"
 TILE_APP_ID = "android-tile-production"
 TILE_APP_VERSION = "2.109.0.4485"
 TILE_CLIENT_UUID = "26726553-703b-3998-9f0e-c5f256caaf6d"  # Fixed UUID from node-tile
+TILE_API_KEY = 'nnLGVr!iQk"0'  # From Android app ApiUrls.java
 
 
 class TileAPIError(Exception):
@@ -51,10 +55,16 @@ class TileAPIClient:
         self.client_uuid = TILE_CLIENT_UUID  # Use fixed UUID
         self.session_cookie: str | None = None
 
-    def _get_headers(self, include_session: bool = False, include_content_type: bool = False) -> dict[str, str]:
-        """Get API request headers.
+    def _get_headers(
+        self,
+        url_path: str,
+        include_session: bool = False,
+        include_content_type: bool = False,
+    ) -> dict[str, str]:
+        """Get API request headers with HMAC signature.
 
         Args:
+            url_path: API endpoint path (e.g., "/api/v1/users/groups")
             include_session: Whether to include session cookie
             include_content_type: Whether to include Content-Type header
 
@@ -63,12 +73,26 @@ class TileAPIClient:
         """
         import time
 
+        timestamp_ms = int(time.time() * 1000)
+
+        # Calculate HMAC-SHA256 signature per Android app CryptoUtils.bS()
+        # signature = base64(hmac_sha256(api_key, url_path + timestamp))
+        signature_input = f"{url_path}{timestamp_ms}"
+        signature = base64.b64encode(
+            hmac.new(
+                TILE_API_KEY.encode('utf-8'),
+                signature_input.encode('utf-8'),
+                hashlib.sha256
+            ).digest()
+        ).decode('ascii')
+
         headers = {
             "User-Agent": f"Tile/android/{TILE_APP_VERSION} (Unknown; Android11)",
             "tile_app_id": TILE_APP_ID,
             "tile_app_version": TILE_APP_VERSION,
             "tile_client_uuid": self.client_uuid,
-            "tile_request_timestamp": str(int(time.time() * 1000)),
+            "tile_request_timestamp": str(timestamp_ms),
+            "tile_request_signature": signature,  # NEW: Required for proper auth
         }
 
         if include_content_type:
@@ -92,6 +116,7 @@ class TileAPIClient:
             # Login to Tile API (single POST request)
             _LOGGER.debug("Logging in to Tile API with email: %s", self.email)
             session_url = f"{TILE_API_BASE}/clients/{self.client_uuid}/sessions"
+            url_path = f"/api/v1/clients/{self.client_uuid}/sessions"
 
             # Use form-encoded data, not JSON
             from aiohttp import FormData
@@ -99,7 +124,7 @@ class TileAPIClient:
             form_data.add_field("email", self.email)
             form_data.add_field("password", self.password)
 
-            headers = self._get_headers(include_content_type=True)
+            headers = self._get_headers(url_path, include_content_type=True)
             _LOGGER.debug("POST %s", session_url)
             _LOGGER.debug("Request headers: %s", headers)
             _LOGGER.debug("Request body: email=%s&password=***", self.email)
@@ -163,10 +188,11 @@ class TileAPIClient:
             # Get all devices from /users/groups endpoint
             _LOGGER.debug("Fetching Tile devices from /users/groups")
             groups_url = f"{TILE_API_BASE}/users/groups?last_modified_timestamp=0"
+            url_path = "/api/v1/users/groups?last_modified_timestamp=0"
 
             async with self.session.get(
                 groups_url,
-                headers=self._get_headers(include_session=True),
+                headers=self._get_headers(url_path, include_session=True),
             ) as resp:
                 if resp.status != 200:
                     text = await resp.text()

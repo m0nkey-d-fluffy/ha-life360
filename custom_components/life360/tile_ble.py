@@ -478,17 +478,18 @@ class TileBleClient:
             _LOGGER.warning("🔧 Auth data (after MEP header): %s", auth_data.hex())
 
             # Expected format: [response_prefix, randT, sresT, ...]
-            # MEP-enabled Tiles use 7-byte randT and sresT (14 bytes total)
-            # Non-MEP Tiles use 8-byte randT and sresT (16 bytes total)
+            # Based on Android app decompilation (AuthTransaction.java):
+            # - Old TOA format: 1 prefix + 10 bytes randT + 4 bytes sresT = 15 bytes
+            # - Even older format: 1 prefix + 8 bytes randT + 8 bytes sresT = 17 bytes
             response_prefix = auth_data[0]
             _LOGGER.warning("🔧 Response prefix: 0x%02x (command %d)", response_prefix, response_prefix)
 
-            if len(auth_data) == 15:  # MEP format: 1 prefix + 7 randT + 7 sresT
-                _LOGGER.warning("🔧 MEP format detected (7-byte randT/sresT)")
-                rand_t = auth_data[1:8]
-                sres_t = auth_data[8:15]
-            elif len(auth_data) >= 17:  # Non-MEP format: 1 prefix + 8 randT + 8 sresT
-                _LOGGER.warning("🔧 Non-MEP format detected (8-byte randT/sresT)")
+            if len(auth_data) == 15:  # TOA format: 1 prefix + 10 randT + 4 sresT
+                _LOGGER.warning("🔧 TOA format detected (10-byte randT, 4-byte sresT)")
+                rand_t = auth_data[1:11]   # 10 bytes randT
+                sres_t = auth_data[11:15]  # 4 bytes sresT
+            elif len(auth_data) >= 17:  # Older format: 1 prefix + 8 randT + 8 sresT
+                _LOGGER.warning("🔧 Older format detected (8-byte randT/sresT)")
                 rand_t = auth_data[1:9]
                 sres_t = auth_data[9:17]
             else:
@@ -497,8 +498,8 @@ class TileBleClient:
                 for i, byte in enumerate(auth_data):
                     _LOGGER.warning("   [%d]: 0x%02x", i, byte)
                 return False
-            _LOGGER.warning("🔧 Received randT: %s", rand_t.hex())
-            _LOGGER.warning("🔧 Received sresT: %s", sres_t.hex())
+            _LOGGER.warning("🔧 Received randT: %s (%d bytes)", rand_t.hex(), len(rand_t))
+            _LOGGER.warning("🔧 Received sresT: %s (%d bytes)", sres_t.hex(), len(sres_t))
 
             # Step 3: Verify Tile's signature
             _LOGGER.warning("🔧 Step 3: Verifying Tile's signature...")
@@ -520,149 +521,98 @@ class TileBleClient:
                 _LOGGER.warning("🔧 Extracted channel_prefix: %s", channel_prefix.hex())
                 _LOGGER.warning("🔧 Extracted channel_data: %s", channel_data.hex())
 
-            # Node-tile's generateHmac: concatenates buffers and pads/truncates to exactly 32 bytes
-            def node_tile_hmac(*buffers):
-                """Replicate node-tile's generateHmac logic."""
+            # Android CryptoUtils.b() method: concatenates buffers and pads to exactly 32 bytes
+            def android_hmac(*buffers):
+                """Replicate Android CryptoUtils.b() logic."""
                 # Concatenate all buffers
-                concatenated = b"".join(buffers)
-                # Pad or truncate to exactly 32 bytes (node-tile: Buffer.concat([...toBuffers], 32))
-                if len(concatenated) < 32:
-                    padded = concatenated + bytes(32 - len(concatenated))
-                else:
-                    padded = concatenated[:32]
-                return hmac.new(self.auth_key, padded, hashlib.sha256).digest()[:7]
+                total_len = sum(len(b) for b in buffers)
+                if total_len > 32:
+                    raise ValueError(f"Input length {total_len} > 32")
 
-            # Try 1-2: Basic combinations with node-tile padding
-            expected_1 = node_tile_hmac(rand_t, self._rand_a)
-            _LOGGER.warning("🔧 Try 1 (randT+randA, node-tile pad): %s", expected_1.hex())
+                # Create 32-byte buffer (zero-padded)
+                padded = bytearray(32)
+                offset = 0
+                for buf in buffers:
+                    padded[offset:offset+len(buf)] = buf
+                    offset += len(buf)
 
-            expected_2 = node_tile_hmac(self._rand_a, rand_t)
-            _LOGGER.warning("🔧 Try 2 (randA+randT, node-tile pad): %s", expected_2.hex())
+                # Return full HMAC digest (caller extracts needed bytes)
+                return hmac.new(self.auth_key, bytes(padded), hashlib.sha256).digest()
 
-            # Try 3-4: Include TDI response data
-            expected_3 = node_tile_hmac(self._rand_a, rand_t, tdi_data)
-            _LOGGER.warning("🔧 Try 3 (randA+randT+TDI, node-tile pad): %s", expected_3.hex())
+            # Try 1: Android CryptoUtils.a() - THE CORRECT METHOD!
+            # Used in TilesManager.java line 1853 for existing devices
+            # CryptoUtils.a() calls b(authKey, randA, randT) and extracts bytes [4:8]
+            full_hmac_1 = android_hmac(self._rand_a, rand_t)
+            expected_1 = full_hmac_1[4:8]  # Extract bytes 4-7 (4 bytes)
+            _LOGGER.warning("🔧 Try 1 (ANDROID: randA+randT pad32 [4:8]): %s", expected_1.hex())
+            _LOGGER.warning("   Full HMAC: %s", full_hmac_1.hex())
 
-            expected_4 = node_tile_hmac(rand_t, self._rand_a, tdi_data)
-            _LOGGER.warning("🔧 Try 4 (randT+randA+TDI, node-tile pad): %s", expected_4.hex())
+            # Try 2: Reverse order (just in case)
+            full_hmac_2 = android_hmac(rand_t, self._rand_a)
+            expected_2 = full_hmac_2[4:8]
+            _LOGGER.warning("🔧 Try 2 (ANDROID: randT+randA pad32 [4:8]): %s", expected_2.hex())
 
-            # Try 5-6: Include response prefix
-            expected_5 = node_tile_hmac(self._rand_a, rand_t, bytes([response_prefix]))
-            _LOGGER.warning("🔧 Try 5 (randA+randT+prefix, node-tile pad): %s", expected_5.hex())
+            # Try 3: Different byte ranges from Method 1
+            expected_3 = full_hmac_1[0:4]  # First 4 bytes
+            _LOGGER.warning("🔧 Try 3 (ANDROID: randA+randT pad32 [0:4]): %s", expected_3.hex())
 
-            expected_6 = node_tile_hmac(rand_t, self._rand_a, bytes([response_prefix]))
-            _LOGGER.warning("🔧 Try 6 (randT+randA+prefix, node-tile pad): %s", expected_6.hex())
+            # Try 4: Extract bytes [8:12] (another 4-byte range)
+            expected_4 = full_hmac_1[8:12]
+            _LOGGER.warning("🔧 Try 4 (ANDROID: randA+randT pad32 [8:12]): %s", expected_4.hex())
 
-            # Try 7-8: Include channel_data and channel_prefix (if extracted from TDI)
-            if channel_data and channel_prefix:
-                expected_7 = node_tile_hmac(self._rand_a, channel_data, channel_prefix, rand_t)
-                _LOGGER.warning("🔧 Try 7 (randA+chData+chPrefix+randT): %s", expected_7.hex())
+            # Try 5: Truncate randT to 8 bytes (some Tiles might do this)
+            rand_t_8 = rand_t[:8] if len(rand_t) > 8 else rand_t
+            full_hmac_5 = android_hmac(self._rand_a, rand_t_8)
+            expected_5 = full_hmac_5[4:8]
+            _LOGGER.warning("🔧 Try 5 (ANDROID: randA+randT[0:8] pad32 [4:8]): %s", expected_5.hex())
 
-                expected_8 = node_tile_hmac(self._rand_a, rand_t, channel_data, channel_prefix)
-                _LOGGER.warning("🔧 Try 8 (randA+randT+chData+chPrefix): %s", expected_8.hex())
-            else:
-                expected_7 = b""
-                expected_8 = b""
+            # Placeholder for additional methods (keep empty for now)
+            expected_6 = b""
+            expected_7 = b""
+            expected_8 = b""
+            expected_9 = b""
+            expected_10 = b""
+            expected_11 = b""
+            expected_12 = b""
+            expected_13 = b""
+            expected_14 = b""
+            expected_15 = b""
+            expected_16 = b""
+            expected_17 = b""
+            expected_18 = b""
+            expected_19 = b""
+            expected_20 = b""
+            expected_21 = b""
+            expected_22 = b""
+            expected_23 = b""
 
-            # Try 9-10: Include MEP connectionless bytes
-            MEP_DATA = bytes([0xFF, 0xFF, 0xFF, 0xFF])
-            expected_9 = node_tile_hmac(self._rand_a, rand_t, MEP_DATA)
-            _LOGGER.warning("🔧 Try 9 (randA+randT+MEP_0xFFFF): %s", expected_9.hex())
-
-            expected_10 = node_tile_hmac(rand_t, self._rand_a, MEP_DATA)
-            _LOGGER.warning("🔧 Try 10 (randT+randA+MEP_0xFFFF): %s", expected_10.hex())
-
-            # Try 11-12: Include full MEP header
-            MEP_HEADER = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
-            expected_11 = node_tile_hmac(self._rand_a, rand_t, MEP_HEADER)
-            _LOGGER.warning("🔧 Try 11 (randA+randT+full_MEP_header): %s", expected_11.hex())
-
-            expected_12 = node_tile_hmac(rand_t, self._rand_a, MEP_HEADER)
-            _LOGGER.warning("🔧 Try 12 (randT+randA+full_MEP_header): %s", expected_12.hex())
-
-            # Try 13-14: Include only randT without randA (testing if Tile only uses its own random)
-            expected_13 = node_tile_hmac(rand_t)
-            _LOGGER.warning("🔧 Try 13 (only randT, node-tile pad): %s", expected_13.hex())
-
-            expected_14 = node_tile_hmac(self._rand_a)
-            _LOGGER.warning("🔧 Try 14 (only randA, node-tile pad): %s", expected_14.hex())
-
-            # Try 15-16: Old padding method for comparison
-            msg15 = rand_t + self._rand_a
-            if len(msg15) < 32:
-                msg15 = msg15 + bytes(32 - len(msg15))
-            expected_15 = hmac.new(self.auth_key, msg15, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 15 (randT+randA, old pad method): %s", expected_15.hex())
-
-            msg16 = self._rand_a + rand_t
-            if len(msg16) < 32:
-                msg16 = msg16 + bytes(32 - len(msg16))
-            expected_16 = hmac.new(self.auth_key, msg16, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 16 (randA+randT, old pad method): %s", expected_16.hex())
-
-            # Try 17-18: Try with only first byte of TDI response (might be channel info)
-            if len(tdi_data) >= 2:
-                expected_17 = node_tile_hmac(self._rand_a, rand_t, tdi_data[1:2])
-                _LOGGER.warning("🔧 Try 17 (randA+randT+TDI[1]): %s", expected_17.hex())
-
-                expected_18 = node_tile_hmac(self._rand_a, rand_t, tdi_data[1:3])
-                _LOGGER.warning("🔧 Try 18 (randA+randT+TDI[1:3]): %s", expected_18.hex())
-            else:
-                expected_17 = b""
-                expected_18 = b""
-
-            # Try 19-20: Include auth_data (the full response minus MEP header)
-            expected_19 = node_tile_hmac(self._rand_a, auth_data[1:])  # Everything after prefix
-            _LOGGER.warning("🔧 Try 19 (randA+auth_data[1:]): %s", expected_19.hex())
-
-            expected_20 = node_tile_hmac(rand_t, self._rand_a, tdi_data[1:])  # TDI data without cmd
-            _LOGGER.warning("🔧 Try 20 (randT+randA+TDI_data_no_cmd): %s", expected_20.hex())
-
-            # Try 21: CORRECT METHOD from research paper
-            # "sresT = HMAC-SHA256(randA + randT + tileId, interimAuthKey)[4:8]"
-            # Source: "Security and Privacy Analysis of Tile's Location Tracking Protocol"
-            tile_id_bytes = bytes.fromhex(self.tile_id) if isinstance(self.tile_id, str) else self.tile_id
-            hmac_input = self._rand_a + rand_t + tile_id_bytes
-            full_hmac = hmac.new(self.auth_key, hmac_input, hashlib.sha256).digest()
-            expected_21 = full_hmac[4:8]  # Bytes 4-7 (not 0-6!)
-            _LOGGER.warning("🔧 Try 21 (RESEARCH: randA+randT+tileId, bytes[4:8]): %s", expected_21.hex())
-            _LOGGER.warning("🔧    → tileId: %s (%d bytes)", tile_id_bytes.hex(), len(tile_id_bytes))
-            _LOGGER.warning("🔧    → HMAC input length: %d bytes", len(hmac_input))
-
-            # Try 22-23: Variations with different byte ranges
-            expected_22 = full_hmac[0:4]  # First 4 bytes
-            _LOGGER.warning("🔧 Try 22 (randA+randT+tileId, bytes[0:4]): %s", expected_22.hex())
-
-            expected_23 = full_hmac[4:11]  # Bytes 4-10 (7 bytes like others)
-            _LOGGER.warning("🔧 Try 23 (randA+randT+tileId, bytes[4:11]): %s", expected_23.hex())
-
-            _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
+            _LOGGER.warning("🔧 Tile sent sresT: %s (%d bytes)", sres_t.hex(), len(sres_t))
 
             # Check which one matches
             expected_list = [
-                (expected_1, "randT+randA node-tile pad"),
-                (expected_2, "randA+randT node-tile pad"),
-                (expected_3, "randA+randT+TDI node-tile pad"),
-                (expected_4, "randT+randA+TDI node-tile pad"),
-                (expected_5, "randA+randT+prefix node-tile pad"),
-                (expected_6, "randT+randA+prefix node-tile pad"),
-                (expected_7, "randA+chData+chPrefix+randT"),
-                (expected_8, "randA+randT+chData+chPrefix"),
-                (expected_9, "randA+randT+MEP_0xFFFF"),
-                (expected_10, "randT+randA+MEP_0xFFFF"),
-                (expected_11, "randA+randT+full_MEP_header"),
-                (expected_12, "randT+randA+full_MEP_header"),
-                (expected_13, "only randT"),
-                (expected_14, "only randA"),
-                (expected_15, "randT+randA old pad"),
-                (expected_16, "randA+randT old pad"),
-                (expected_17, "randA+randT+TDI[1]"),
-                (expected_18, "randA+randT+TDI[1:3]"),
-                (expected_19, "randA+auth_data[1:]"),
-                (expected_20, "randT+randA+TDI_data_no_cmd"),
-                (expected_21, "RESEARCH: randA+randT+tileId bytes[4:8]"),
-                (expected_22, "randA+randT+tileId bytes[0:4]"),
-                (expected_23, "randA+randT+tileId bytes[4:11]"),
+                (expected_1, "ANDROID CryptoUtils.a: pad32(randA+randT)[4:8]"),
+                (expected_2, "ANDROID reverse: pad32(randT+randA)[4:8]"),
+                (expected_3, "ANDROID alt range: pad32(randA+randT)[0:4]"),
+                (expected_4, "ANDROID alt range: pad32(randA+randT)[8:12]"),
+                (expected_5, "ANDROID w/ randT truncated: pad32(randA+randT[0:8])[4:8]"),
+                (expected_6, ""),
+                (expected_7, ""),
+                (expected_8, ""),
+                (expected_9, ""),
+                (expected_10, ""),
+                (expected_11, ""),
+                (expected_12, ""),
+                (expected_13, ""),
+                (expected_14, ""),
+                (expected_15, ""),
+                (expected_16, ""),
+                (expected_17, ""),
+                (expected_18, ""),
+                (expected_19, ""),
+                (expected_20, ""),
+                (expected_21, ""),
+                (expected_22, ""),
+                (expected_23, ""),
             ]
 
             # If we have a known working method, try it first

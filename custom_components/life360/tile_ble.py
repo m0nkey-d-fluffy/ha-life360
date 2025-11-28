@@ -498,89 +498,165 @@ class TileBleClient:
             _LOGGER.warning("🔧 Step 3: Verifying Tile's signature...")
 
             # Try different HMAC calculations to find the correct one
-            _LOGGER.warning("🔧 Trying different HMAC combinations...")
+            _LOGGER.warning("🔧 Trying different HMAC combinations (based on node-tile implementation)...")
             _LOGGER.warning("🔧 Auth key: %s (length=%d)", self.auth_key.hex(), len(self.auth_key))
+            _LOGGER.warning("🔧 TDI response data: %s", tdi_data.hex() if tdi_data else "N/A")
+            _LOGGER.warning("🔧 Response prefix: 0x%02x", response_prefix)
 
-            # Try 1-4: Basic combinations
-            expected_1 = self._compute_sres_padded(rand_t, self._rand_a, self.auth_key)
-            _LOGGER.warning("🔧 Try 1 (randT+randA padded): %s", expected_1.hex())
+            # Extract potential channelData and channelPrefix from TDI response
+            # TDI response format might be: [cmd, channel_prefix, channel_data...]
+            channel_prefix = None
+            channel_data = None
+            if len(tdi_data) >= 3:
+                # TDI data: [0x14, 0x01, 0x3f] - might contain channel info
+                channel_prefix = tdi_data[1:2]  # 0x01
+                channel_data = tdi_data[2:3]    # 0x3f
+                _LOGGER.warning("🔧 Extracted channel_prefix: %s", channel_prefix.hex())
+                _LOGGER.warning("🔧 Extracted channel_data: %s", channel_data.hex())
 
-            expected_2 = self._compute_sres_padded(self._rand_a, rand_t, self.auth_key)
-            _LOGGER.warning("🔧 Try 2 (randA+randT padded): %s", expected_2.hex())
+            # Node-tile's generateHmac: concatenates buffers and pads/truncates to exactly 32 bytes
+            def node_tile_hmac(*buffers):
+                """Replicate node-tile's generateHmac logic."""
+                # Concatenate all buffers
+                concatenated = b"".join(buffers)
+                # Pad or truncate to exactly 32 bytes (node-tile: Buffer.concat([...toBuffers], 32))
+                if len(concatenated) < 32:
+                    padded = concatenated + bytes(32 - len(concatenated))
+                else:
+                    padded = concatenated[:32]
+                return hmac.new(self.auth_key, padded, hashlib.sha256).digest()[:7]
 
-            expected_3 = self._compute_sres(rand_t, self._rand_a, self.auth_key)
-            _LOGGER.warning("🔧 Try 3 (randT+randA no pad): %s", expected_3.hex())
+            # Try 1-2: Basic combinations with node-tile padding
+            expected_1 = node_tile_hmac(rand_t, self._rand_a)
+            _LOGGER.warning("🔧 Try 1 (randT+randA, node-tile pad): %s", expected_1.hex())
 
-            expected_4 = self._compute_sres(self._rand_a, rand_t, self.auth_key)
-            _LOGGER.warning("🔧 Try 4 (randA+randT no pad): %s", expected_4.hex())
+            expected_2 = node_tile_hmac(self._rand_a, rand_t)
+            _LOGGER.warning("🔧 Try 2 (randA+randT, node-tile pad): %s", expected_2.hex())
 
-            # Try 5-6: With MEP connectionless data
+            # Try 3-4: Include TDI response data
+            expected_3 = node_tile_hmac(self._rand_a, rand_t, tdi_data)
+            _LOGGER.warning("🔧 Try 3 (randA+randT+TDI, node-tile pad): %s", expected_3.hex())
+
+            expected_4 = node_tile_hmac(rand_t, self._rand_a, tdi_data)
+            _LOGGER.warning("🔧 Try 4 (randT+randA+TDI, node-tile pad): %s", expected_4.hex())
+
+            # Try 5-6: Include response prefix
+            expected_5 = node_tile_hmac(self._rand_a, rand_t, bytes([response_prefix]))
+            _LOGGER.warning("🔧 Try 5 (randA+randT+prefix, node-tile pad): %s", expected_5.hex())
+
+            expected_6 = node_tile_hmac(rand_t, self._rand_a, bytes([response_prefix]))
+            _LOGGER.warning("🔧 Try 6 (randT+randA+prefix, node-tile pad): %s", expected_6.hex())
+
+            # Try 7-8: Include channel_data and channel_prefix (if extracted from TDI)
+            if channel_data and channel_prefix:
+                expected_7 = node_tile_hmac(self._rand_a, channel_data, channel_prefix, rand_t)
+                _LOGGER.warning("🔧 Try 7 (randA+chData+chPrefix+randT): %s", expected_7.hex())
+
+                expected_8 = node_tile_hmac(self._rand_a, rand_t, channel_data, channel_prefix)
+                _LOGGER.warning("🔧 Try 8 (randA+randT+chData+chPrefix): %s", expected_8.hex())
+            else:
+                expected_7 = b""
+                expected_8 = b""
+
+            # Try 9-10: Include MEP connectionless bytes
             MEP_DATA = bytes([0xFF, 0xFF, 0xFF, 0xFF])
-            msg5 = rand_t + self._rand_a + MEP_DATA
-            if len(msg5) < 32:
-                msg5 = msg5 + bytes(32 - len(msg5))
-            expected_5 = hmac.new(self.auth_key, msg5, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 5 (randT+randA+MEP padded): %s", expected_5.hex())
+            expected_9 = node_tile_hmac(self._rand_a, rand_t, MEP_DATA)
+            _LOGGER.warning("🔧 Try 9 (randA+randT+MEP_0xFFFF): %s", expected_9.hex())
 
-            msg6 = self._rand_a + rand_t + MEP_DATA
-            if len(msg6) < 32:
-                msg6 = msg6 + bytes(32 - len(msg6))
-            expected_6 = hmac.new(self.auth_key, msg6, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 6 (randA+randT+MEP padded): %s", expected_6.hex())
+            expected_10 = node_tile_hmac(rand_t, self._rand_a, MEP_DATA)
+            _LOGGER.warning("🔧 Try 10 (randT+randA+MEP_0xFFFF): %s", expected_10.hex())
 
-            # Try 7-8: Direct concatenation, first 7 bytes of HMAC
-            msg7 = rand_t + self._rand_a
-            expected_7 = hmac.new(self.auth_key, msg7, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 7 (randT+randA, first 7 bytes): %s", expected_7.hex())
+            # Try 11-12: Include full MEP header
+            MEP_HEADER = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+            expected_11 = node_tile_hmac(self._rand_a, rand_t, MEP_HEADER)
+            _LOGGER.warning("🔧 Try 11 (randA+randT+full_MEP_header): %s", expected_11.hex())
 
-            msg8 = self._rand_a + rand_t
-            expected_8 = hmac.new(self.auth_key, msg8, hashlib.sha256).digest()[:7]
-            _LOGGER.warning("🔧 Try 8 (randA+randT, first 7 bytes): %s", expected_8.hex())
+            expected_12 = node_tile_hmac(rand_t, self._rand_a, MEP_HEADER)
+            _LOGGER.warning("🔧 Try 12 (randT+randA+full_MEP_header): %s", expected_12.hex())
 
-            # Try 9: Test if auth key needs base64 decoding (node-tile uses base64-encoded keys)
-            import base64
-            try:
-                # The auth key might be base64-encoded
-                auth_key_b64_decoded = base64.b64decode(self.auth_key.hex())
-                _LOGGER.warning("🔧 Auth key (base64 decoded from hex): %s (length=%d)",
-                               auth_key_b64_decoded.hex(), len(auth_key_b64_decoded))
+            # Try 13-14: Include only randT without randA (testing if Tile only uses its own random)
+            expected_13 = node_tile_hmac(rand_t)
+            _LOGGER.warning("🔧 Try 13 (only randT, node-tile pad): %s", expected_13.hex())
 
-                # Try HMAC with base64-decoded auth key
-                msg9 = self._rand_a + rand_t
-                expected_9 = hmac.new(auth_key_b64_decoded, msg9, hashlib.sha256).digest()[:7]
-                _LOGGER.warning("🔧 Try 9 (randA+randT with b64 auth): %s", expected_9.hex())
+            expected_14 = node_tile_hmac(self._rand_a)
+            _LOGGER.warning("🔧 Try 14 (only randA, node-tile pad): %s", expected_14.hex())
 
-                # Also try the reverse order
-                msg10 = rand_t + self._rand_a
-                expected_10 = hmac.new(auth_key_b64_decoded, msg10, hashlib.sha256).digest()[:7]
-                _LOGGER.warning("🔧 Try 10 (randT+randA with b64 auth): %s", expected_10.hex())
-            except Exception as e:
-                _LOGGER.warning("🔧 Base64 decode failed: %s", e)
-                expected_9 = b""
-                expected_10 = b""
+            # Try 15-16: Old padding method for comparison
+            msg15 = rand_t + self._rand_a
+            if len(msg15) < 32:
+                msg15 = msg15 + bytes(32 - len(msg15))
+            expected_15 = hmac.new(self.auth_key, msg15, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 15 (randT+randA, old pad method): %s", expected_15.hex())
+
+            msg16 = self._rand_a + rand_t
+            if len(msg16) < 32:
+                msg16 = msg16 + bytes(32 - len(msg16))
+            expected_16 = hmac.new(self.auth_key, msg16, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 16 (randA+randT, old pad method): %s", expected_16.hex())
+
+            # Try 17-18: Try with only first byte of TDI response (might be channel info)
+            if len(tdi_data) >= 2:
+                expected_17 = node_tile_hmac(self._rand_a, rand_t, tdi_data[1:2])
+                _LOGGER.warning("🔧 Try 17 (randA+randT+TDI[1]): %s", expected_17.hex())
+
+                expected_18 = node_tile_hmac(self._rand_a, rand_t, tdi_data[1:3])
+                _LOGGER.warning("🔧 Try 18 (randA+randT+TDI[1:3]): %s", expected_18.hex())
+            else:
+                expected_17 = b""
+                expected_18 = b""
+
+            # Try 19-20: Include auth_data (the full response minus MEP header)
+            expected_19 = node_tile_hmac(self._rand_a, auth_data[1:])  # Everything after prefix
+            _LOGGER.warning("🔧 Try 19 (randA+auth_data[1:]): %s", expected_19.hex())
+
+            expected_20 = node_tile_hmac(rand_t, self._rand_a, tdi_data[1:])  # TDI data without cmd
+            _LOGGER.warning("🔧 Try 20 (randT+randA+TDI_data_no_cmd): %s", expected_20.hex())
 
             _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
 
             # Check which one matches
             expected_list = [
-                (expected_1, "randT+randA padded"),
-                (expected_2, "randA+randT padded"),
-                (expected_3, "randT+randA no pad"),
-                (expected_4, "randA+randT no pad"),
-                (expected_5, "randT+randA+MEP padded"),
-                (expected_6, "randA+randT+MEP padded"),
-                (expected_7, "randT+randA first 7"),
-                (expected_8, "randA+randT first 7"),
-                (expected_9, "randA+randT with b64 auth"),
-                (expected_10, "randT+randA with b64 auth"),
+                (expected_1, "randT+randA node-tile pad"),
+                (expected_2, "randA+randT node-tile pad"),
+                (expected_3, "randA+randT+TDI node-tile pad"),
+                (expected_4, "randT+randA+TDI node-tile pad"),
+                (expected_5, "randA+randT+prefix node-tile pad"),
+                (expected_6, "randT+randA+prefix node-tile pad"),
+                (expected_7, "randA+chData+chPrefix+randT"),
+                (expected_8, "randA+randT+chData+chPrefix"),
+                (expected_9, "randA+randT+MEP_0xFFFF"),
+                (expected_10, "randT+randA+MEP_0xFFFF"),
+                (expected_11, "randA+randT+full_MEP_header"),
+                (expected_12, "randT+randA+full_MEP_header"),
+                (expected_13, "only randT"),
+                (expected_14, "only randA"),
+                (expected_15, "randT+randA old pad"),
+                (expected_16, "randA+randT old pad"),
+                (expected_17, "randA+randT+TDI[1]"),
+                (expected_18, "randA+randT+TDI[1:3]"),
+                (expected_19, "randA+auth_data[1:]"),
+                (expected_20, "randT+randA+TDI_data_no_cmd"),
             ]
 
             for i, (expected, desc) in enumerate(expected_list, 1):
-                if sres_t == expected:
-                    _LOGGER.warning("✅ Signature verified! Method %d: %s", i, desc)
+                if expected and sres_t == expected:
+                    _LOGGER.warning("✅✅✅ SIGNATURE VERIFIED! Method %d: %s", i, desc)
+                    _LOGGER.warning("✅ This is the correct HMAC calculation method!")
                     break
             else:
-                _LOGGER.error("❌ Tile signature mismatch! None of the 10 methods worked.")
+                _LOGGER.error("❌ Tile signature mismatch! None of the 20 methods worked.")
+                _LOGGER.error("❌ DIAGNOSIS:")
+                _LOGGER.error("   1. Auth key source: Life360 API (base64 decoded)")
+                _LOGGER.error("   2. Auth key bytes: %s", self.auth_key.hex())
+                _LOGGER.error("   3. Auth key length: %d bytes", len(self.auth_key))
+                _LOGGER.error("   4. Expected sresT: %s", sres_t.hex())
+                _LOGGER.error("")
+                _LOGGER.error("💡 NEXT STEPS TO TRY:")
+                _LOGGER.error("   A. Verify auth key is correct by checking Tile API directly")
+                _LOGGER.error("   B. Check if Life360's auth key matches Tile's auth key")
+                _LOGGER.error("   C. Try accessing Tile API directly instead of Life360 API")
+                _LOGGER.error("   D. Examine if randA size (14 bytes) is correct for your Tile model")
+                _LOGGER.error("   E. Check if TDI-based auth is correct approach (vs regular AUTH)")
                 return False
 
             # Step 4: Authentication complete

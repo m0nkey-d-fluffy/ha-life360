@@ -91,6 +91,8 @@ class TileBleClient:
         tile_id: str,
         auth_key: bytes,
         timeout: float = 10.0,
+        on_auth_success: Any | None = None,
+        known_auth_method: int | None = None,
     ) -> None:
         """Initialize Tile BLE client.
 
@@ -98,6 +100,8 @@ class TileBleClient:
             tile_id: The Tile device ID (MAC address or UUID)
             auth_key: 16-byte authentication key for this Tile
             timeout: Connection timeout in seconds
+            on_auth_success: Optional callback(tile_id, method_number) called when auth succeeds
+            known_auth_method: Optional previously successful auth method number (1-20)
         """
         if not BLEAK_AVAILABLE:
             raise RuntimeError("bleak library not available")
@@ -105,6 +109,8 @@ class TileBleClient:
         self.tile_id = tile_id
         self.auth_key = auth_key
         self.timeout = timeout
+        self.on_auth_success = on_auth_success
+        self.known_auth_method = known_auth_method
         self._client: BleakClient | None = None
         self._device: BLEDevice | None = None
         self._response_event = asyncio.Event()
@@ -638,26 +644,48 @@ class TileBleClient:
                 (expected_20, "randT+randA+TDI_data_no_cmd"),
             ]
 
-            for i, (expected, desc) in enumerate(expected_list, 1):
+            # If we have a known working method, try it first
+            if self.known_auth_method and 1 <= self.known_auth_method <= len(expected_list):
+                expected, desc = expected_list[self.known_auth_method - 1]
                 if expected and sres_t == expected:
-                    _LOGGER.warning("✅✅✅ SIGNATURE VERIFIED! Method %d: %s", i, desc)
-                    _LOGGER.warning("✅ This is the correct HMAC calculation method!")
-                    break
-            else:
-                _LOGGER.error("❌ Tile signature mismatch! None of the 20 methods worked.")
-                _LOGGER.error("❌ DIAGNOSIS:")
-                _LOGGER.error("   1. Auth key source: Life360 API (base64 decoded)")
-                _LOGGER.error("   2. Auth key bytes: %s", self.auth_key.hex())
-                _LOGGER.error("   3. Auth key length: %d bytes", len(self.auth_key))
-                _LOGGER.error("   4. Expected sresT: %s", sres_t.hex())
-                _LOGGER.error("")
-                _LOGGER.error("💡 NEXT STEPS TO TRY:")
-                _LOGGER.error("   A. Verify auth key is correct by checking Tile API directly")
-                _LOGGER.error("   B. Check if Life360's auth key matches Tile's auth key")
-                _LOGGER.error("   C. Try accessing Tile API directly instead of Life360 API")
-                _LOGGER.error("   D. Examine if randA size (14 bytes) is correct for your Tile model")
-                _LOGGER.error("   E. Check if TDI-based auth is correct approach (vs regular AUTH)")
-                return False
+                    _LOGGER.warning("✅✅✅ SIGNATURE VERIFIED! Known method %d worked: %s", self.known_auth_method, desc)
+                    _LOGGER.warning("✅ Fast auth using cached method!")
+                    # No need to call callback since method is already cached
+                else:
+                    _LOGGER.warning("⚠️ Known method %d failed, trying all methods...", self.known_auth_method)
+                    # Continue to try all methods below
+
+            # Try all methods if known method failed or wasn't provided
+            if not self._authenticated:  # Only try if not already authenticated above
+                for i, (expected, desc) in enumerate(expected_list, 1):
+                    if expected and sres_t == expected:
+                        _LOGGER.warning("✅✅✅ SIGNATURE VERIFIED! Method %d: %s", i, desc)
+                        _LOGGER.warning("✅ This is the correct HMAC calculation method!")
+
+                        # Call the callback to store the successful auth method
+                        if self.on_auth_success:
+                            try:
+                                self.on_auth_success(self.tile_id, i)
+                                _LOGGER.info("✅ Stored auth method %d for tile %s", i, self.tile_id[:8])
+                            except Exception as callback_err:
+                                _LOGGER.warning("Failed to store auth method: %s", callback_err)
+
+                        break
+                else:
+                    _LOGGER.error("❌ Tile signature mismatch! None of the 20 methods worked.")
+                    _LOGGER.error("❌ DIAGNOSIS:")
+                    _LOGGER.error("   1. Auth key source: Life360 API (base64 decoded)")
+                    _LOGGER.error("   2. Auth key bytes: %s", self.auth_key.hex())
+                    _LOGGER.error("   3. Auth key length: %d bytes", len(self.auth_key))
+                    _LOGGER.error("   4. Expected sresT: %s", sres_t.hex())
+                    _LOGGER.error("")
+                    _LOGGER.error("💡 NEXT STEPS TO TRY:")
+                    _LOGGER.error("   A. Verify auth key is correct by checking Tile API directly")
+                    _LOGGER.error("   B. Check if Life360's auth key matches Tile's auth key")
+                    _LOGGER.error("   C. Try accessing Tile API directly instead of Life360 API")
+                    _LOGGER.error("   D. Examine if randA size (14 bytes) is correct for your Tile model")
+                    _LOGGER.error("   E. Check if TDI-based auth is correct approach (vs regular AUTH)")
+                    return False
 
             # Step 4: Authentication complete
             self._authenticated = True
@@ -841,6 +869,8 @@ async def ring_tile_ble(
     volume: TileVolume = TileVolume.MED,
     duration_seconds: int = 30,
     scan_timeout: float = 10.0,
+    on_auth_success: Any | None = None,
+    known_auth_method: int | None = None,
 ) -> bool:
     """High-level function to ring a Tile via BLE.
 
@@ -850,6 +880,8 @@ async def ring_tile_ble(
         volume: Ring volume level
         duration_seconds: Ring duration
         scan_timeout: BLE scan timeout
+        on_auth_success: Optional callback(tile_id, method_number) called when auth succeeds
+        known_auth_method: Optional previously successful auth method number (1-20)
 
     Returns:
         True if successfully rang the Tile
@@ -875,7 +907,12 @@ async def ring_tile_ble(
         _LOGGER.error("❌ Invalid auth key length: %d (expected 16)", len(auth_key))
         return False
 
-    client = TileBleClient(tile_id, auth_key)
+    client = TileBleClient(
+        tile_id,
+        auth_key,
+        on_auth_success=on_auth_success,
+        known_auth_method=known_auth_method,
+    )
 
     try:
         # Scan for the Tile

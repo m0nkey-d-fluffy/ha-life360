@@ -40,6 +40,7 @@ from .const import (
     ATTR_SPEED,
     ATTR_WIFI_ON,
     ATTRIBUTION,
+    DOMAIN,
     SIGNAL_DEVICES_CHANGED,
     SIGNAL_MEMBERS_CHANGED,
     SIGNAL_UPDATE_LOCATION,
@@ -592,6 +593,25 @@ class Life360DeviceDeviceTracker(
             )
             if self._device_data.location.accuracy:
                 attrs[ATTR_GPS_ACCURACY] = self._device_data.location.accuracy
+
+        # Add Tile-specific BLE attributes if this is a Tile device
+        if self._device_data.device_type == DeviceType.TILE:
+            # Get the circles/members coordinator to access tile caches
+            circles_coord = self.coordinator.hass.data[DOMAIN][
+                self.coordinator.config_entry.entry_id
+            ].circles_coordinator
+
+            # Get Tile BLE ID from cache
+            if tile_ble_id := circles_coord._tile_ble_id_cache.get(self._device_id):
+                attrs["tile_ble_id"] = tile_ble_id
+
+                # Get MAC address from cache (keyed by BLE ID)
+                if mac_address := circles_coord._tile_mac_cache.get(tile_ble_id):
+                    attrs["tile_mac_address"] = mac_address
+
+                # Get authentication method from cache (keyed by BLE ID)
+                if auth_method := circles_coord._tile_auth_method_cache.get(tile_ble_id):
+                    attrs["tile_auth_method"] = auth_method
 
         return attrs
 

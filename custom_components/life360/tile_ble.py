@@ -499,36 +499,64 @@ class TileBleClient:
 
             # Try different HMAC calculations to find the correct one
             _LOGGER.warning("🔧 Trying different HMAC combinations...")
+            _LOGGER.warning("🔧 Auth key: %s (length=%d)", self.auth_key.hex(), len(self.auth_key))
 
-            # Try 1: randT + randA with padding (our current method)
+            # Try 1-4: Basic combinations
             expected_1 = self._compute_sres_padded(rand_t, self._rand_a, self.auth_key)
             _LOGGER.warning("🔧 Try 1 (randT+randA padded): %s", expected_1.hex())
 
-            # Try 2: randA + randT with padding
             expected_2 = self._compute_sres_padded(self._rand_a, rand_t, self.auth_key)
             _LOGGER.warning("🔧 Try 2 (randA+randT padded): %s", expected_2.hex())
 
-            # Try 3: randT + randA without padding
             expected_3 = self._compute_sres(rand_t, self._rand_a, self.auth_key)
             _LOGGER.warning("🔧 Try 3 (randT+randA no pad): %s", expected_3.hex())
 
-            # Try 4: randA + randT without padding
             expected_4 = self._compute_sres(self._rand_a, rand_t, self.auth_key)
             _LOGGER.warning("🔧 Try 4 (randA+randT no pad): %s", expected_4.hex())
+
+            # Try 5-6: With MEP connectionless data
+            MEP_DATA = bytes([0xFF, 0xFF, 0xFF, 0xFF])
+            msg5 = rand_t + self._rand_a + MEP_DATA
+            if len(msg5) < 32:
+                msg5 = msg5 + bytes(32 - len(msg5))
+            expected_5 = hmac.new(self.auth_key, msg5, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 5 (randT+randA+MEP padded): %s", expected_5.hex())
+
+            msg6 = self._rand_a + rand_t + MEP_DATA
+            if len(msg6) < 32:
+                msg6 = msg6 + bytes(32 - len(msg6))
+            expected_6 = hmac.new(self.auth_key, msg6, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 6 (randA+randT+MEP padded): %s", expected_6.hex())
+
+            # Try 7-8: Direct concatenation, first 7 bytes of HMAC
+            msg7 = rand_t + self._rand_a
+            expected_7 = hmac.new(self.auth_key, msg7, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 7 (randT+randA, first 7 bytes): %s", expected_7.hex())
+
+            msg8 = self._rand_a + rand_t
+            expected_8 = hmac.new(self.auth_key, msg8, hashlib.sha256).digest()[:7]
+            _LOGGER.warning("🔧 Try 8 (randA+randT, first 7 bytes): %s", expected_8.hex())
 
             _LOGGER.warning("🔧 Tile sent sresT: %s", sres_t.hex())
 
             # Check which one matches
-            if sres_t == expected_1:
-                _LOGGER.warning("✅ Signature verified! (randT+randA padded)")
-            elif sres_t == expected_2:
-                _LOGGER.warning("✅ Signature verified! (randA+randT padded)")
-            elif sres_t == expected_3:
-                _LOGGER.warning("✅ Signature verified! (randT+randA no pad)")
-            elif sres_t == expected_4:
-                _LOGGER.warning("✅ Signature verified! (randA+randT no pad)")
+            expected_list = [
+                (expected_1, "randT+randA padded"),
+                (expected_2, "randA+randT padded"),
+                (expected_3, "randT+randA no pad"),
+                (expected_4, "randA+randT no pad"),
+                (expected_5, "randT+randA+MEP padded"),
+                (expected_6, "randA+randT+MEP padded"),
+                (expected_7, "randT+randA first 7"),
+                (expected_8, "randA+randT first 7"),
+            ]
+
+            for i, (expected, desc) in enumerate(expected_list, 1):
+                if sres_t == expected:
+                    _LOGGER.warning("✅ Signature verified! Method %d: %s", i, desc)
+                    break
             else:
-                _LOGGER.error("❌ Tile signature mismatch! None of the methods worked.")
+                _LOGGER.error("❌ Tile signature mismatch! None of the 8 methods worked.")
                 return False
 
             # Step 4: Authentication complete

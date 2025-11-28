@@ -2037,6 +2037,9 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             True if BLE ring was successful
         """
         _LOGGER.info("🔔 Attempting to ring Tile device %s via BLE", device_id)
+        _LOGGER.info("🔍 Ring: device_id=%s (len=%d), circle=%s", device_id, len(device_id), cid)
+        _LOGGER.info("🔍 Current auth cache keys: %s", list(self._tile_auth_cache.keys()))
+        _LOGGER.info("🔍 Current BLE ID cache keys: %s", list(self._tile_ble_id_cache.keys()))
 
         try:
             from .tile_ble import ring_tile_ble, BLEAK_AVAILABLE, TileVolume

@@ -669,8 +669,21 @@ class TileBleClient:
             self._channel_key = self._derive_channel_encryption_key(channel_data)
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
-            # EXPERIMENTAL: Skip channel establishment and go straight to ring
-            _LOGGER.warning("🧪 EXPERIMENTAL: Skipping channel establishment, will send ring directly")
+            # Step 7: Establish channel with signed command
+            # BLE capture shows this is CRITICAL - Frame 289-291
+            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
+            if not await self._establish_channel():
+                _LOGGER.error("❌ Channel establishment failed")
+                return False
+
+            _LOGGER.warning("✅ Channel established!")
+
+            # Step 8: Update connection parameters for optimal ringing
+            # BLE capture shows this BEFORE ring command - Frame 300
+            _LOGGER.warning("🔧 Step 6: Updating connection parameters...")
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
+                # Don't fail - connection update might not be critical
 
             _LOGGER.warning("✅ Ready for ring command!")
             return True
@@ -907,6 +920,56 @@ class TileBleClient:
 
         except Exception as err:
             _LOGGER.error("❌ Connection update error: %s", err, exc_info=True)
+            return False
+
+    async def _read_song_features(self) -> bool:
+        """Read available song/ring features from the Tile.
+
+        Based on BLE capture frame 310 which shows this happens before ring command.
+        Command: 02 05 06 [HMAC]
+        - 05 = SONG command
+        - 06 = Transaction type 0x06 (Read features)
+
+        Android code: Line 912 Kc() - b((byte) 5, new SongTransaction((byte) 6).Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            SONG_CMD = 0x05
+            SONG_READ_FEATURES = 0x06  # Read available features/songs
+
+            # Build command payload
+            cmd_payload = bytes([SONG_CMD, SONG_READ_FEATURES])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("🎵 Reading song features...")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ Song features read command sent")
+
+            # Don't wait for response - Tile may or may not respond
+            # BLE capture shows this is "fire and forget"
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ Song features read error: %s", err, exc_info=True)
             return False
 
     def _compute_sres(
@@ -1174,9 +1237,15 @@ class TileBleClient:
                 return False
 
         try:
+            # Read available song features (BLE capture Frame 310 at t=7.377s)
+            # This happens BEFORE the ring command in the capture
+            _LOGGER.warning("🎵 Querying song features before ring...")
+            if not await self._read_song_features():
+                _LOGGER.warning("⚠️ Song features read failed (continuing anyway)")
+
             # Wait for Tile to be ready for ring command
-            # BLE capture shows 2.79s delay between channel establishment and ring
-            # This allows connection parameters to take effect
+            # BLE capture shows 2.79s delay between song features and ring (Frame 310 → 314)
+            # This allows connection parameters to take effect and Tile to process commands
             _LOGGER.warning("⏳ Waiting 2.5s for Tile to be ready for ring command...")
             await asyncio.sleep(2.5)
 

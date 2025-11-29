@@ -783,12 +783,13 @@ class TileBleClient:
             # This matches the increment-before-use pattern
             self._tx_counter += 1
 
-            # CRITICAL: Android line 56-58 shows HMAC is calculated over bArr3 which INCLUDES channel byte!
-            # bArr3 = [channel_byte, command, payload] (line 57 copies bArr.length + 1 bytes)
-            # So we must include channel_byte in HMAC calculation
+            # CRITICAL: HMAC is calculated over [command, payload] WITHOUT channel byte!
+            # ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() ADDS channel byte
+            # Line 56-58: bArr3 = [command, payload], HMAC over bArr3
+            # Line 35-38: ToaMepProcessor.m() adds channel byte AFTER
             sig_data = self._build_hmac_message(
                 self._tx_counter,
-                bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
+                bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
@@ -808,13 +809,21 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
             _LOGGER.warning("🔧 Sending channel establishment at: %.3f", asyncio.get_event_loop().time())
+
+            # EXPERIMENTAL: Try sending 3 times in case of packet loss
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            await asyncio.sleep(0.05)
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            await asyncio.sleep(0.05)
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+
             _LOGGER.warning("🔧 Channel establishment write completed at: %.3f", asyncio.get_event_loop().time())
             _LOGGER.warning("📥 Waiting for channel establishment response...")
             _LOGGER.warning("   Queue size before wait: %d", self._response_queue.qsize())
             _LOGGER.warning("   Timeout: 2.0 seconds")
             _LOGGER.warning("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
             _LOGGER.warning("   🔍 NOTE: If no response arrives, check if Tile firmware rejects HMAC or if BLE notifications failed")
+            _LOGGER.warning("   🧪 EXPERIMENTAL: Sent command 3 times to rule out packet loss")
 
             # Wait for channel establishment response
             # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]
@@ -889,10 +898,11 @@ class TileBleClient:
             # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
             self._tx_counter += 1
 
-            # Calculate HMAC signature - MUST include channel byte (Android line 57)
+            # Calculate HMAC signature - HMAC over [command, payload] WITHOUT channel byte
+            # Android: ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() adds channel byte
             sig_data = self._build_hmac_message(
                 self._tx_counter,
-                bytes([self._channel_byte]) + cmd_payload
+                cmd_payload
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
@@ -1004,12 +1014,14 @@ class TileBleClient:
         - TX (outgoing): counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
         - RX (incoming): counter_bytes + {0} + length_byte + cmd_data (padded to 32 bytes)
 
-        CRITICAL: cmd_data must include the channel byte! (Android line 57 copies bArr.length + 1)
-        Format: [channel_byte, command, payload...]
+        CRITICAL: cmd_data is [command, payload...] WITHOUT channel byte!
+        Android flow:
+          1. ToaProcessor.d() calculates HMAC over [command, payload]
+          2. ToaMepProcessor.m() ADDS channel byte after HMAC calculation
 
         Args:
             counter: Transaction counter
-            cmd_data: Command data INCLUDING channel byte: [channel_byte, command, payload...]
+            cmd_data: Command data [command, payload...] WITHOUT channel byte
             is_rx: True for received responses, False for sent commands
 
         Returns:
@@ -1119,11 +1131,11 @@ class TileBleClient:
         self._tx_counter += 1
 
         # Calculate HMAC signature using channel encryption key
-        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + [channel_byte + data]
-        # CRITICAL: Android line 57 includes channel byte in HMAC calculation
+        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + [command, payload]
+        # CRITICAL: HMAC does NOT include channel byte (added later by ToaMepProcessor.m())
         sig_data = self._build_hmac_message(
             self._tx_counter,
-            bytes([self._channel_byte]) + cmd_payload
+            cmd_payload
         )
         signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 

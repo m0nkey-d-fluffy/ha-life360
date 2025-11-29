@@ -1230,30 +1230,32 @@ class TileBleClient:
                 return False
 
         try:
-            # EXPERIMENT: Try connectionless MEP ring command (TRM style)
-            _LOGGER.warning("🧪 EXPERIMENTAL: Trying OLD connectionless ring format...")
+            # EXPERIMENT: Try TRM (Tile Ring Module) command - the OLD protocol
+            _LOGGER.warning("🧪 EXPERIMENTAL: Trying TRM (old Tile Ring Module) command...")
 
             # Build connectionless MEP ring command
             MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-            # Try SONG command connectionless
-            SONG_CMD = 0x05
-            SONG_PLAY = 0x02
-            SONG_FLAGS = 0x01
+            # TRM command (command 0x18 = 24 decimal)
+            # Based on Android: new TrmTransaction(START_RING, BytesUtils.iB(volume))
+            TRM_CMD = 0x18  # Tile Ring Module
+            TRM_START_RING = 0x01  # Start ringing
+
+            # Volume as 4-byte little-endian integer (Android: BytesUtils.iB(volume))
+            volume_bytes = volume.value.to_bytes(4, byteorder='little')
 
             ring_payload = bytes([
-                SONG_CMD,
-                SONG_PLAY,
-                SONG_FLAGS,
-                volume.value,
-                duration_seconds
-            ])
+                TRM_CMD,
+                TRM_START_RING,
+            ]) + volume_bytes
 
             cmd = MEP_CONNECTIONLESS + ring_payload
 
-            _LOGGER.warning("🔔 Connectionless ring command: %s", cmd.hex())
+            _LOGGER.warning("🔔 TRM ring command: %s", cmd.hex())
             _LOGGER.warning("   MEP header: %s", MEP_CONNECTIONLESS.hex())
-            _LOGGER.warning("   Payload: %s", ring_payload.hex())
+            _LOGGER.warning("   TRM command: 0x%02x", TRM_CMD)
+            _LOGGER.warning("   Transaction: 0x%02x (START_RING)", TRM_START_RING)
+            _LOGGER.warning("   Volume (4-byte LE): %s (value=%d)", volume_bytes.hex(), volume.value)
 
             # Send ring command directly without waiting for response
             # Ring commands are "fire and forget" - Tile doesn't respond

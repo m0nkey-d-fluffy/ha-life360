@@ -482,27 +482,59 @@ class TileBleClient:
             # MEP connectionless packet format: [0x00, 0xFF, 0xFF, 0xFF, 0xFF, prefix, data]
             MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-            # Step 1: Send TDI (Tile Data Information) request
-            # Command: 0x13 (19 decimal), Payload: 0x01 (request TILE_ID)
-            _LOGGER.warning("🔧 Step 1: Sending TDI request for Tile information...")
+            # Step 1: Send ALL TDI (Tile Data Information) requests
+            # BLE capture shows Android sends 4 TDI requests before randA!
+            # This might be REQUIRED for Tile to accept channel establishment
+            _LOGGER.warning("🔧 Step 1: Sending TDI requests (matching BLE capture sequence)...")
+
+            # TDI request 1: TILE_ID (Frame 273 in capture)
             tdi_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x01])
-            _LOGGER.warning("🔧 TDI command: %s (length=%d)", tdi_cmd.hex(), len(tdi_cmd))
-
             tdi_response = await self._send_command(tdi_cmd)
-            _LOGGER.warning("🔧 TDI response: %s (length=%d)", tdi_response.hex() if tdi_response else "empty", len(tdi_response))
-
-            if not tdi_response or len(tdi_response) < 5:
-                _LOGGER.error("❌ Invalid TDI response (too short or empty)")
-                return False
-
-            # Parse TDI response (format: [0x00, 0xFF, 0xFF, 0xFF, 0xFF, response_data...])
-            # Skip MEP header (5 bytes) to get to actual response
-            if tdi_response.startswith(MEP_CONNECTIONLESS):
+            if tdi_response and tdi_response.startswith(MEP_CONNECTIONLESS):
                 tdi_data = tdi_response[5:]
-                _LOGGER.warning("✅ TDI response received: %s", tdi_data.hex())
-            else:
-                _LOGGER.warning("⚠️ Unexpected TDI response format, using full response")
-                tdi_data = tdi_response
+                _LOGGER.warning("✅ TDI TILE_ID response: %s", tdi_data.hex())
+
+            # TDI request 2: FIRMWARE_VERSION (Frame 276 in capture)
+            tdi_fw_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x03])
+            tdi_fw_response = await self._send_command(tdi_fw_cmd)
+            if tdi_fw_response and tdi_fw_response.startswith(MEP_CONNECTIONLESS):
+                fw_data = tdi_fw_response[5:]
+                _LOGGER.warning("✅ TDI FIRMWARE response: %s", fw_data.hex())
+                # Try to decode ASCII firmware version
+                try:
+                    if len(fw_data) > 2:
+                        fw_str = fw_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.warning("   Firmware: %s", fw_str)
+                except:
+                    pass
+
+            # TDI request 3: MODEL_NUMBER (Frame 277 in capture)
+            tdi_model_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x04])
+            tdi_model_response = await self._send_command(tdi_model_cmd)
+            if tdi_model_response and tdi_model_response.startswith(MEP_CONNECTIONLESS):
+                model_data = tdi_model_response[5:]
+                _LOGGER.warning("✅ TDI MODEL response: %s", model_data.hex())
+                try:
+                    if len(model_data) > 2:
+                        model_str = model_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.warning("   Model: %s", model_str)
+                except:
+                    pass
+
+            # TDI request 4: HARDWARE_VERSION (Frame 278 in capture)
+            tdi_hw_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x05])
+            tdi_hw_response = await self._send_command(tdi_hw_cmd)
+            if tdi_hw_response and tdi_hw_response.startswith(MEP_CONNECTIONLESS):
+                hw_data = tdi_hw_response[5:]
+                _LOGGER.warning("✅ TDI HARDWARE response: %s", hw_data.hex())
+                try:
+                    if len(hw_data) > 2:
+                        hw_str = hw_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.warning("   Hardware: %s", hw_str)
+                except:
+                    pass
+
+            _LOGGER.warning("✅ All TDI requests completed (matching BLE capture)")
 
             # Step 2: Generate and send randA (14 bytes for MEP-enabled Tiles)
             self._rand_a = os.urandom(14)
@@ -674,11 +706,14 @@ class TileBleClient:
             self._channel_key = self._derive_channel_encryption_key(channel_data)
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
-            # EXPERIMENT: Skip ALL channel-based commands and try connectionless ring
-            _LOGGER.warning("🧪 EXPERIMENTAL: Skipping channel establishment entirely")
-            _LOGGER.warning("🧪 Will try OLD connectionless ring command instead")
+            # Step 7: Establish channel (CRITICAL - BLE capture shows this is required!)
+            # Now that we've sent ALL TDI requests, Tile should accept channel establishment
+            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
+            if not await self._establish_channel():
+                _LOGGER.error("❌ Channel establishment failed")
+                return False
 
-            _LOGGER.warning("✅ Ready for connectionless ring!")
+            _LOGGER.warning("✅ Channel established - using channel-based commands!")
             return True
 
         except Exception as err:
@@ -1230,32 +1265,13 @@ class TileBleClient:
                 return False
 
         try:
-            # EXPERIMENT: Try TRM (Tile Ring Module) command - the OLD protocol
-            _LOGGER.warning("🧪 EXPERIMENTAL: Trying TRM (old Tile Ring Module) command...")
+            # Use channel-based SONG command (matches BLE capture Frame 314 EXACTLY)
+            # BLE capture shows: 02 05 02 01 03 1e [HMAC]
+            # This is the EXACT command that made THIS Cat Tile ring!
+            _LOGGER.warning("🔔 Using channel-based SONG command (from BLE capture Frame 314)...")
 
-            # Build connectionless MEP ring command
-            MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
-
-            # TRM command (command 0x18 = 24 decimal)
-            # Based on Android: new TrmTransaction(START_RING, BytesUtils.iB(volume))
-            TRM_CMD = 0x18  # Tile Ring Module
-            TRM_START_RING = 0x01  # Start ringing
-
-            # Volume as 4-byte little-endian integer (Android: BytesUtils.iB(volume))
-            volume_bytes = volume.value.to_bytes(4, byteorder='little')
-
-            ring_payload = bytes([
-                TRM_CMD,
-                TRM_START_RING,
-            ]) + volume_bytes
-
-            cmd = MEP_CONNECTIONLESS + ring_payload
-
-            _LOGGER.warning("🔔 TRM ring command: %s", cmd.hex())
-            _LOGGER.warning("   MEP header: %s", MEP_CONNECTIONLESS.hex())
-            _LOGGER.warning("   TRM command: 0x%02x", TRM_CMD)
-            _LOGGER.warning("   Transaction: 0x%02x (START_RING)", TRM_START_RING)
-            _LOGGER.warning("   Volume (4-byte LE): %s (value=%d)", volume_bytes.hex(), volume.value)
+            cmd = self._build_ring_command(volume, duration_seconds)
+            _LOGGER.warning("🔔 Channel-based ring command: %s", cmd.hex())
 
             # Send ring command directly without waiting for response
             # Ring commands are "fire and forget" - Tile doesn't respond

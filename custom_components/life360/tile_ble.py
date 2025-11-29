@@ -674,33 +674,11 @@ class TileBleClient:
             self._channel_key = self._derive_channel_encryption_key(channel_data)
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
-            # Small delay to let Tile process channel open (observed in BLE capture)
-            _LOGGER.warning("⏱️ Waiting 100ms for Tile to process channel open...")
-            await asyncio.sleep(0.1)
+            # EXPERIMENT: Skip ALL channel-based commands and try connectionless ring
+            _LOGGER.warning("🧪 EXPERIMENTAL: Skipping channel establishment entirely")
+            _LOGGER.warning("🧪 Will try OLD connectionless ring command instead")
 
-            # Step 7: Establish channel with signed command
-            # BLE capture shows this is CRITICAL - Frame 289-291
-            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
-            if not await self._establish_channel():
-                _LOGGER.error("❌ Channel establishment failed")
-                return False
-
-            _LOGGER.warning("✅ Channel established!")
-
-            # Small delay after channel establishment
-            await asyncio.sleep(0.1)
-
-            # Step 8: Update connection parameters for optimal ringing
-            # BLE capture shows this BEFORE ring command - Frame 300
-            _LOGGER.warning("🔧 Step 6: Updating connection parameters...")
-            if not await self._update_connection_params():
-                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
-                # Don't fail - connection update might not be critical
-
-            # Small delay after connection update
-            await asyncio.sleep(0.1)
-
-            _LOGGER.warning("✅ Ready for ring command!")
+            _LOGGER.warning("✅ Ready for connectionless ring!")
             return True
 
         except Exception as err:
@@ -1252,20 +1230,30 @@ class TileBleClient:
                 return False
 
         try:
-            # Read available song features (BLE capture Frame 310 at t=7.377s)
-            # This happens BEFORE the ring command in the capture
-            _LOGGER.warning("🎵 Querying song features before ring...")
-            if not await self._read_song_features():
-                _LOGGER.warning("⚠️ Song features read failed (continuing anyway)")
+            # EXPERIMENT: Try connectionless MEP ring command (TRM style)
+            _LOGGER.warning("🧪 EXPERIMENTAL: Trying OLD connectionless ring format...")
 
-            # Wait for Tile to be ready for ring command
-            # BLE capture shows 2.79s delay between song features and ring (Frame 310 → 314)
-            # This allows connection parameters to take effect and Tile to process commands
-            _LOGGER.warning("⏳ Waiting 2.5s for Tile to be ready for ring command...")
-            await asyncio.sleep(2.5)
+            # Build connectionless MEP ring command
+            MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
 
-            _LOGGER.warning("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
-            cmd = self._build_ring_command(volume, duration_seconds)
+            # Try SONG command connectionless
+            SONG_CMD = 0x05
+            SONG_PLAY = 0x02
+            SONG_FLAGS = 0x01
+
+            ring_payload = bytes([
+                SONG_CMD,
+                SONG_PLAY,
+                SONG_FLAGS,
+                volume.value,
+                duration_seconds
+            ])
+
+            cmd = MEP_CONNECTIONLESS + ring_payload
+
+            _LOGGER.warning("🔔 Connectionless ring command: %s", cmd.hex())
+            _LOGGER.warning("   MEP header: %s", MEP_CONNECTIONLESS.hex())
+            _LOGGER.warning("   Payload: %s", ring_payload.hex())
 
             # Send ring command directly without waiting for response
             # Ring commands are "fire and forget" - Tile doesn't respond

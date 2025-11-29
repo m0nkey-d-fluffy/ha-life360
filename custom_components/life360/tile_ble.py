@@ -654,7 +654,15 @@ class TileBleClient:
                 _LOGGER.error("❌ Channel establishment failed")
                 return False
 
-            _LOGGER.warning("✅ Channel established - ready for commands!")
+            _LOGGER.warning("✅ Channel established!")
+
+            # Step 8: Update BLE connection parameters for optimal ringing
+            # BLE capture shows this is sent before ring command
+            _LOGGER.warning("🔧 Step 6: Updating connection parameters for ringing...")
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
+
+            _LOGGER.warning("✅ Ready for ring command!")
             return True
 
         except Exception as err:
@@ -797,6 +805,68 @@ class TileBleClient:
 
         except Exception as err:
             _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
+            return False
+
+    async def _update_connection_params(self) -> bool:
+        """Update BLE connection parameters for ringing.
+
+        Based on BLE capture frame 300 and Android BleConnParameters.
+        Sets high-latency parameters: 288-304ms intervals, latency 4, timeout 6000ms.
+
+        Android uses BleConnParameters(288, 304, 4, 600) before ringing for
+        more reliable command delivery.
+
+        Returns:
+            True if update sent successfully
+        """
+        try:
+            TCU_CMD = 0x0c  # 12 decimal - Tile Connection Update
+            TCU_SET = 0x03  # Transaction: set parameters
+
+            # Connection parameters (from Android bch high-latency config)
+            min_interval = 288  # * 1.25ms = 360ms
+            max_interval = 304  # * 1.25ms = 380ms
+            latency = 4         # Slave latency
+            timeout = 600       # * 10ms = 6000ms
+
+            # Build parameters (little-endian 16-bit values)
+            params = (
+                min_interval.to_bytes(2, 'little') +
+                max_interval.to_bytes(2, 'little') +
+                latency.to_bytes(2, 'little') +
+                timeout.to_bytes(2, 'little') +
+                bytes([0x0e])  # Flags from BLE capture
+            )
+
+            # Build command payload: command + transaction + params
+            cmd_payload = bytes([TCU_CMD, TCU_SET]) + params
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("🔧 Updating BLE connection parameters:")
+            _LOGGER.warning("   Intervals: %d-%dms, Latency: %d, Timeout: %dms",
+                          int(min_interval * 1.25), int(max_interval * 1.25),
+                          latency, timeout * 10)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ Connection parameters update sent")
+
+            # Wait briefly for parameter update to take effect
+            await asyncio.sleep(0.3)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ Connection update error: %s", err, exc_info=True)
             return False
 
     def _compute_sres(
@@ -1002,6 +1072,12 @@ class TileBleClient:
                 return False
 
         try:
+            # Wait for Tile to be ready for ring command
+            # BLE capture shows 2.5s delay between channel establishment and ring
+            # This allows connection parameters to take effect
+            _LOGGER.warning("⏳ Waiting 2.5s for Tile to be ready for ring command...")
+            await asyncio.sleep(2.5)
+
             _LOGGER.warning("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
             cmd = self._build_ring_command(volume, duration_seconds)
 

@@ -816,21 +816,18 @@ class TileBleClient:
             # Build command: channel_byte + command + payload
             cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
 
-            # EXPERIMENTAL: Try counter=0 for first channel command (not incrementing)
-            # Android ToaProcessor.d() increments counter FIRST (line 54), but maybe
-            # counters are reset after channel open? Testing empirically.
-            # self._tx_counter += 1  # COMMENTED OUT FOR TESTING
-
-            # Use counter 0 for channel establishment
-            test_counter = 0
-            _LOGGER.warning("🧪 EXPERIMENTAL: Using counter=%d for channel establishment", test_counter)
+            # CRITICAL: Android ToaProcessor.d() increments counter FIRST (line 54), then uses it (line 58)
+            # So: first channel command uses counter=1, second uses counter=2, etc.
+            # Analysis confirms: connectionless commands (TDI, randA, channel open) do NOT increment cuQ
+            # Channel establishment is the FIRST call to ToaProcessor.d(), so cuQ goes from 0 to 1
+            self._tx_counter += 1
 
             # CRITICAL: HMAC is calculated over [command, payload] WITHOUT channel byte!
             # ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() ADDS channel byte
-            # Line 56-58: bArr3 = [command, payload], HMAC over bArr3
-            # Line 35-38: ToaMepProcessor.m() adds channel byte AFTER
+            # Android ToaProcessor.java Line 56-58: bArr3 = [command, payload], HMAC over bArr3
+            # Android ToaMepProcessor.java Line 35-40: m() adds channel byte AFTER
             sig_data = self._build_hmac_message(
-                test_counter,
+                self._tx_counter,
                 bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
@@ -839,7 +836,7 @@ class TileBleClient:
             cmd = cmd_data + signature
 
             _LOGGER.warning("🔧 Channel establishment command:")
-            _LOGGER.warning("   TX counter: %d (EXPERIMENTAL - using 0 instead of incrementing)", test_counter)
+            _LOGGER.warning("   TX counter: %d (Android cuQ++ before use)", self._tx_counter)
             _LOGGER.warning("   HMAC data: %s", sig_data.hex())
             _LOGGER.warning("   Signature: %s", signature.hex())
             _LOGGER.warning("   Final command: %s (length=%d)", cmd.hex(), len(cmd))
@@ -893,6 +890,104 @@ class TileBleClient:
 
         except Exception as err:
             _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
+            return False
+
+    async def _send_tdg_diagnostic(self) -> bool:
+        """Send TDG (Tile Diagnostic) command.
+
+        Based on BLE capture frame 292 which shows this happens after channel establishment.
+        Command: 02 0a 01 [HMAC]
+        - 0a = TDG command
+        - 01 = Transaction type (READ)
+
+        Android code: Line 585 JX() - b((byte) 10, new TdgTransaction().Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            TDG_CMD = 0x0a  # 10 decimal - Tile Diagnostic
+            TDG_READ = 0x01  # Transaction: read diagnostic data
+
+            # Build command payload
+            cmd_payload = bytes([TDG_CMD, TDG_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("🔍 Sending TDG diagnostic...")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ TDG diagnostic command sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ TDG diagnostic error: %s", err, exc_info=True)
+            return False
+
+    async def _send_adv_int(self) -> bool:
+        """Send AdvInt (Advertisement Interval) command.
+
+        Based on BLE capture frame 298 which shows this happens after TDG.
+        Command: 02 07 02 [HMAC]
+        - 07 = AdvInt command
+        - 02 = Transaction type (READ)
+
+        Android code: Line 751 - b((byte) 7, new AdvIntTransaction((byte) 2).Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            ADVINT_CMD = 0x07  # 7 decimal - Advertisement Interval
+            ADVINT_READ = 0x02  # Transaction: read
+
+            # Build command payload
+            cmd_payload = bytes([ADVINT_CMD, ADVINT_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("📡 Sending AdvInt...")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ AdvInt command sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ AdvInt error: %s", err, exc_info=True)
             return False
 
     async def _update_connection_params(self) -> bool:
@@ -1095,12 +1190,12 @@ class TileBleClient:
         """Build message for HMAC signature calculation.
 
         Based on Android ToaProcessor.d() line 58 and CryptoUtils.b():
-        HMAC input: connection_id + counter_bytes + direction + length_byte + cmd_data (padded to 32 bytes)
+        HMAC input: counter(8-byte LE) + direction + length + cmd_data (padded to 32 bytes)
 
         Java: bcK.b(this.cuO, BytesUtils.au(this.cuQ), cuM, new byte[]{length}, bArr3)
         Where:
-        - this.cuO = connection_id (4 bytes: the last 4 bytes of MEP_CONNECTION_ID)
-        - BytesUtils.au(this.cuQ) = counter as 4-byte little-endian
+        - this.cuO = channel encryption key (16 bytes) - used as HMAC KEY (param 1)
+        - BytesUtils.au(this.cuQ) = counter as 8-byte little-endian LONG
         - cuM = {1} for TX, cuN = {0} for RX (direction byte)
         - new byte[]{length} = payload length
         - bArr3 = [command, payload...]
@@ -1123,8 +1218,9 @@ class TileBleClient:
         # Where cuO (Il() result) is the HMAC KEY, not part of the message!
         # CryptoUtils.b() concatenates params 2-5 into message, param 1 is the key.
 
-        # Convert counter to 4-byte little-endian (BytesUtils.au())
-        counter_bytes = counter.to_bytes(4, byteorder='little')
+        # Convert counter to 8-byte little-endian (BytesUtils.au() returns long/8 bytes)
+        # Android BytesUtils.au(): ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(counter)
+        counter_bytes = counter.to_bytes(8, byteorder='little')
 
         # Build message: counter + direction + length + data
         # Connection ID is NOT included - it was used to derive the channel_key!
@@ -1290,10 +1386,42 @@ class TileBleClient:
                 return False
 
         try:
+            # CRITICAL: Send intermediate commands to maintain counter synchronization!
+            # Based on BLE capture analysis, the Tile expects these commands before ring:
+            # 1. Channel Establishment (counter=1) - already done in authenticate()
+            # 2. TDG Diagnostic (counter=2)
+            # 3. AdvInt (counter=3)
+            # 4. TCU Connection Update (counter=4)
+            # 5. SONG READ_FEATURES (counter=5)
+            # 6. SONG PLAY/RING (counter=6)
+            #
+            # Why? The counter is embedded in HMAC but not sent separately.
+            # The Tile tracks RX counter independently and validates HMAC using it.
+            # If we skip commands, counter desyncs and HMAC validation fails!
+            _LOGGER.warning("🔧 Sending pre-ring command sequence to sync counter...")
+
+            # Command 2: TDG Diagnostic
+            if not await self._send_tdg_diagnostic():
+                _LOGGER.warning("⚠️ TDG failed, continuing anyway...")
+
+            # Command 3: AdvInt
+            if not await self._send_adv_int():
+                _LOGGER.warning("⚠️ AdvInt failed, continuing anyway...")
+
+            # Command 4: TCU Connection Update
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ TCU failed, continuing anyway...")
+
+            # Command 5: SONG READ_FEATURES
+            if not await self._read_song_features():
+                _LOGGER.warning("⚠️ READ_FEATURES failed, continuing anyway...")
+
+            # Command 6: SONG PLAY (RING)
             # Use channel-based SONG command (matches BLE capture Frame 314 EXACTLY)
             # BLE capture shows: 02 05 02 01 03 1e [HMAC]
             # This is the EXACT command that made THIS Cat Tile ring!
             _LOGGER.warning("🔔 Using channel-based SONG command (from BLE capture Frame 314)...")
+            _LOGGER.warning("   TX counter should now be 6 (matching BLE capture!)")
 
             cmd = self._build_ring_command(volume, duration_seconds)
             _LOGGER.warning("🔔 Channel-based ring command: %s", cmd.hex())

@@ -1092,12 +1092,12 @@ class TileBleClient:
         """Build message for HMAC signature calculation.
 
         Based on Android ToaProcessor.d() line 58 and CryptoUtils.b():
-        HMAC input: connection_id + counter_bytes + direction + length_byte + cmd_data (padded to 32 bytes)
+        HMAC input: counter(8-byte LE) + direction + length + cmd_data (padded to 32 bytes)
 
         Java: bcK.b(this.cuO, BytesUtils.au(this.cuQ), cuM, new byte[]{length}, bArr3)
         Where:
-        - this.cuO = connection_id (4 bytes: the last 4 bytes of MEP_CONNECTION_ID)
-        - BytesUtils.au(this.cuQ) = counter as 4-byte little-endian
+        - this.cuO = channel encryption key (16 bytes) - used as HMAC KEY (param 1)
+        - BytesUtils.au(this.cuQ) = counter as 8-byte little-endian LONG
         - cuM = {1} for TX, cuN = {0} for RX (direction byte)
         - new byte[]{length} = payload length
         - bArr3 = [command, payload...]
@@ -1120,8 +1120,9 @@ class TileBleClient:
         # Where cuO (Il() result) is the HMAC KEY, not part of the message!
         # CryptoUtils.b() concatenates params 2-5 into message, param 1 is the key.
 
-        # Convert counter to 4-byte little-endian (BytesUtils.au())
-        counter_bytes = counter.to_bytes(4, byteorder='little')
+        # Convert counter to 8-byte little-endian (BytesUtils.au() returns long/8 bytes)
+        # Android BytesUtils.au(): ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(counter)
+        counter_bytes = counter.to_bytes(8, byteorder='little')
 
         # Build message: counter + direction + length + data
         # Connection ID is NOT included - it was used to derive the channel_key!

@@ -670,24 +670,20 @@ class TileBleClient:
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
             # Step 7: Establish channel for subsequent commands
-            # EXPERIMENTAL: Skip channel establishment - Tile doesn't respond to it
-            # Try sending ring directly after channel open
-            _LOGGER.warning("🔧 Step 5: SKIPPING channel establishment (Tile doesn't respond)")
-            _LOGGER.warning("   Will try ring command directly with TX counter=0")
-            # if not await self._establish_channel():
-            #     _LOGGER.error("❌ Channel establishment failed")
-            #     return False
+            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
+            if not await self._establish_channel():
+                _LOGGER.error("❌ Channel establishment failed")
+                return False
 
-            _LOGGER.warning("✅ Ready for ring (skipped channel establishment)!")
+            _LOGGER.warning("✅ Channel established!")
 
             # Step 8: Update BLE connection parameters for optimal ringing
-            # EXPERIMENTAL: Also skip connection params to test ring directly
-            _LOGGER.warning("🔧 Step 6: SKIPPING connection parameter update")
-            _LOGGER.warning("   Testing ring command directly after channel open")
-            # if not await self._update_connection_params():
-            #     _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
+            # BLE capture shows this is sent before ring command
+            _LOGGER.warning("🔧 Step 6: Updating connection parameters for ringing...")
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
 
-            _LOGGER.warning("✅ Ready for ring command (minimal setup)!")
+            _LOGGER.warning("✅ Ready for ring command!")
             return True
 
         except Exception as err:
@@ -1078,13 +1074,16 @@ class TileBleClient:
         volume: TileVolume = TileVolume.MED,
         duration_seconds: int = 30,
     ) -> bytes:
-        """Build the ring/find command.
+        """Build the ring/find command using channel-based SONG command.
 
-        EXPERIMENTAL: Trying BOTH command formats:
-        1. SONG (0x05) - from BLE capture
-        2. TRM (0x18) - from Android decompiled code
-
-        This Tile might need TRM instead of SONG.
+        Based on BLE capture frame 314: 02 05 02 01 03 1e [4-byte-hmac]
+        - Channel byte: 0x02
+        - Command: 0x05 (SONG)
+        - Transaction: 0x02 (PLAY/RING)
+        - Flags: 0x01
+        - Volume level: volume value (1=LOW, 2=MED, 3=HIGH)
+        - Duration: seconds
+        - HMAC: 4-byte signature
 
         Args:
             volume: Ring volume level
@@ -1093,17 +1092,19 @@ class TileBleClient:
         Returns:
             Command bytes (channel-based with HMAC)
         """
-        # TRY TRM COMMAND (0x18 / 24 decimal)
-        TRM_CMD = 0x18  # Tile Ring Module
-        TRM_START_RING = 0x01  # Start ringing transaction
+        SONG_CMD = 0x05
+        SONG_PLAY = 0x02  # Play/ring transaction
+        SONG_FLAGS = 0x01  # Standard flags from BLE capture
 
-        # TRM format might be simpler - just command + transaction
+        # Build command data (without channel byte or HMAC)
+        # This is what goes into the HMAC calculation
         cmd_payload = bytes([
-            TRM_CMD,
-            TRM_START_RING,
+            SONG_CMD,
+            SONG_PLAY,
+            SONG_FLAGS,
+            volume.value,  # Volume level (1-3)
+            duration_seconds,  # Duration in seconds
         ])
-
-        _LOGGER.warning("🔧 EXPERIMENTAL: Using TRM (0x18) ring command instead of SONG")
 
         # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
         self._tx_counter += 1
@@ -1167,8 +1168,13 @@ class TileBleClient:
                 return False
 
         try:
-            # EXPERIMENTAL: Skip delay - testing minimal flow
-            _LOGGER.warning("🔔 Sending ring command immediately (volume=%s, duration=%ds)...", volume.name, duration_seconds)
+            # Wait for Tile to be ready for ring command
+            # BLE capture shows 2.79s delay between channel establishment and ring
+            # This allows connection parameters to take effect
+            _LOGGER.warning("⏳ Waiting 2.5s for Tile to be ready for ring command...")
+            await asyncio.sleep(2.5)
+
+            _LOGGER.warning("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
             cmd = self._build_ring_command(volume, duration_seconds)
 
             # Send ring command directly without waiting for response

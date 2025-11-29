@@ -38,6 +38,10 @@ MEP_COMMAND_CHAR_UUID = "9d410018-35d6-f4dd-ba60-e7bd8dc491c0"
 MEP_RESPONSE_CHAR_UUID = "9d410019-35d6-f4dd-ba60-e7bd8dc491c0"
 TILE_ID_CHAR_UUID = "9d410007-35d6-f4dd-ba60-e7bd8dc491c0"
 
+# MEP (Message Exchange Protocol) connection ID for connectionless commands
+# Format: 00 (connectionless marker) + 4-byte connection ID
+MEP_CONNECTION_ID = bytes.fromhex("00ffffffff")
+
 
 class TileVolume(IntEnum):
     """Tile ring volume levels."""

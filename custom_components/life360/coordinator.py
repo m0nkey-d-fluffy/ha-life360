@@ -2076,7 +2076,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         result = await ring_tile_ble(
             ble_device_id,
             auth_key,
-            volume=TileVolume.MED,
+            volume=TileVolume.HIGH,  # Use HIGH volume for audible ringing
             duration_seconds=30,
             scan_timeout=10.0,
             on_auth_success=on_auth_success,

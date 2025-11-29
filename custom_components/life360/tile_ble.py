@@ -892,6 +892,104 @@ class TileBleClient:
             _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
             return False
 
+    async def _send_tdg_diagnostic(self) -> bool:
+        """Send TDG (Tile Diagnostic) command.
+
+        Based on BLE capture frame 292 which shows this happens after channel establishment.
+        Command: 02 0a 01 [HMAC]
+        - 0a = TDG command
+        - 01 = Transaction type (READ)
+
+        Android code: Line 585 JX() - b((byte) 10, new TdgTransaction().Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            TDG_CMD = 0x0a  # 10 decimal - Tile Diagnostic
+            TDG_READ = 0x01  # Transaction: read diagnostic data
+
+            # Build command payload
+            cmd_payload = bytes([TDG_CMD, TDG_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("🔍 Sending TDG diagnostic...")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ TDG diagnostic command sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ TDG diagnostic error: %s", err, exc_info=True)
+            return False
+
+    async def _send_adv_int(self) -> bool:
+        """Send AdvInt (Advertisement Interval) command.
+
+        Based on BLE capture frame 298 which shows this happens after TDG.
+        Command: 02 07 02 [HMAC]
+        - 07 = AdvInt command
+        - 02 = Transaction type (READ)
+
+        Android code: Line 751 - b((byte) 7, new AdvIntTransaction((byte) 2).Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            ADVINT_CMD = 0x07  # 7 decimal - Advertisement Interval
+            ADVINT_READ = 0x02  # Transaction: read
+
+            # Build command payload
+            cmd_payload = bytes([ADVINT_CMD, ADVINT_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.warning("📡 Sending AdvInt...")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.warning("✅ AdvInt command sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ AdvInt error: %s", err, exc_info=True)
+            return False
+
     async def _update_connection_params(self) -> bool:
         """Update BLE connection parameters for ringing.
 
@@ -1288,10 +1386,42 @@ class TileBleClient:
                 return False
 
         try:
+            # CRITICAL: Send intermediate commands to maintain counter synchronization!
+            # Based on BLE capture analysis, the Tile expects these commands before ring:
+            # 1. Channel Establishment (counter=1) - already done in authenticate()
+            # 2. TDG Diagnostic (counter=2)
+            # 3. AdvInt (counter=3)
+            # 4. TCU Connection Update (counter=4)
+            # 5. SONG READ_FEATURES (counter=5)
+            # 6. SONG PLAY/RING (counter=6)
+            #
+            # Why? The counter is embedded in HMAC but not sent separately.
+            # The Tile tracks RX counter independently and validates HMAC using it.
+            # If we skip commands, counter desyncs and HMAC validation fails!
+            _LOGGER.warning("🔧 Sending pre-ring command sequence to sync counter...")
+
+            # Command 2: TDG Diagnostic
+            if not await self._send_tdg_diagnostic():
+                _LOGGER.warning("⚠️ TDG failed, continuing anyway...")
+
+            # Command 3: AdvInt
+            if not await self._send_adv_int():
+                _LOGGER.warning("⚠️ AdvInt failed, continuing anyway...")
+
+            # Command 4: TCU Connection Update
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ TCU failed, continuing anyway...")
+
+            # Command 5: SONG READ_FEATURES
+            if not await self._read_song_features():
+                _LOGGER.warning("⚠️ READ_FEATURES failed, continuing anyway...")
+
+            # Command 6: SONG PLAY (RING)
             # Use channel-based SONG command (matches BLE capture Frame 314 EXACTLY)
             # BLE capture shows: 02 05 02 01 03 1e [HMAC]
             # This is the EXACT command that made THIS Cat Tile ring!
             _LOGGER.warning("🔔 Using channel-based SONG command (from BLE capture Frame 314)...")
+            _LOGGER.warning("   TX counter should now be 6 (matching BLE capture!)")
 
             cmd = self._build_ring_command(volume, duration_seconds)
             _LOGGER.warning("🔔 Channel-based ring command: %s", cmd.hex())

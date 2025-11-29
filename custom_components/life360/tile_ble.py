@@ -134,7 +134,8 @@ class TileBleClient:
         self._channel_byte: int = 0
         self._channel_data: bytes = b""
         self._connection_id: bytes = MEP_CONNECTION_ID
-        self._tx_counter: int = 0
+        self._tx_counter: int = 0  # Counter for sent commands (cuQ in Android)
+        self._rx_counter: int = 0  # Counter for received responses (cuR in Android)
 
     def _tile_id_to_mac(self, tile_id: str) -> str:
         """Convert Tile ID to expected BLE MAC address.
@@ -384,19 +385,39 @@ class TileBleClient:
 
     def _handle_response(self, sender: Any, data: bytes) -> None:
         """Handle response from Tile."""
-        _LOGGER.warning("🔧 Tile response received from %s: %s (length=%d)", sender, data.hex(), len(data))
+        _LOGGER.warning("📨 === TILE RESPONSE RECEIVED ===")
+        _LOGGER.warning("   From: %s", sender)
+        _LOGGER.warning("   Data: %s", data.hex())
+        _LOGGER.warning("   Length: %d bytes", len(data))
+
+        # Parse response type
+        if len(data) > 0:
+            if data[0] == 0x00:
+                _LOGGER.warning("   Type: MEP Connectionless (auth phase)")
+            elif data[0] == self._channel_byte:
+                _LOGGER.warning("   Type: Channel-based (channel byte: 0x%02x)", self._channel_byte)
+                if len(data) > 1:
+                    _LOGGER.warning("   Response cmd: 0x%02x", data[1])
+            else:
+                _LOGGER.warning("   Type: Unknown (first byte: 0x%02x)", data[0])
+
         self._response_data = data
         self._response_event.set()
+
         # Also put in queue for channel operations
         try:
             self._response_queue.put_nowait(data)
+            _LOGGER.warning("   ✅ Response added to queue (queue size: %d)", self._response_queue.qsize())
         except asyncio.QueueFull:
-            _LOGGER.warning("Response queue full, discarding oldest response")
+            _LOGGER.warning("   ⚠️ Response queue full, discarding oldest response")
             try:
                 self._response_queue.get_nowait()  # Remove oldest
                 self._response_queue.put_nowait(data)  # Add new
-            except:
-                pass
+                _LOGGER.warning("   ✅ Response added after clearing oldest")
+            except Exception as e:
+                _LOGGER.error("   ❌ Failed to add response to queue: %s", e)
+
+        _LOGGER.warning("📨 === END RESPONSE ===\n")
 
     async def _send_command(self, data: bytes) -> bytes:
         """Send command and wait for response.
@@ -781,7 +802,11 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            _LOGGER.warning("🔧 Channel establishment command sent, waiting for response...")
+            _LOGGER.warning("🔧 Channel establishment command sent!")
+            _LOGGER.warning("📥 Waiting for channel establishment response...")
+            _LOGGER.warning("   Queue size before wait: %d", self._response_queue.qsize())
+            _LOGGER.warning("   Timeout: 2.0 seconds")
+            _LOGGER.warning("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
 
             # Wait for channel establishment response
             # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]
@@ -789,16 +814,28 @@ class TileBleClient:
                 response = await asyncio.wait_for(
                     self._response_queue.get(), timeout=2.0
                 )
-                _LOGGER.warning("✅ Channel establishment response received: %s", response.hex())
+                _LOGGER.warning("✅ Channel establishment response received: %s (length=%d)", response.hex(), len(response))
 
                 # Verify it's a channel response (starts with channel_byte + 0x01)
                 if len(response) >= 2 and response[0] == self._channel_byte and response[1] == 0x01:
                     _LOGGER.warning("✅ Channel establishment confirmed by Tile")
+
+                    # Verify HMAC signature on the response
+                    # This is CRITICAL - the Tile expects us to verify responses!
+                    verified, data = self._verify_response_hmac(response)
+                    if verified:
+                        _LOGGER.warning("✅✅✅ Channel establishment response HMAC verified!")
+                    else:
+                        _LOGGER.error("❌ Channel establishment response HMAC verification FAILED!")
+                        _LOGGER.error("   This might cause the Tile to reject subsequent commands")
+                        # Don't return False - continue anyway to see what happens
                 else:
                     _LOGGER.warning("⚠️ Unexpected response format: %s", response.hex())
 
             except asyncio.TimeoutError:
                 _LOGGER.warning("⚠️ No response to channel establishment (2s timeout)")
+                _LOGGER.warning("   This is CRITICAL - Tile should respond within 100ms")
+                _LOGGER.warning("   Check if notifications are being received!")
                 # Continue anyway - some Tiles might not respond
 
             return True
@@ -948,15 +985,17 @@ class TileBleClient:
         h = hmac.new(self.auth_key, message, hashlib.sha256)
         return h.digest()[:16]
 
-    def _build_hmac_message(self, counter: int, cmd_data: bytes) -> bytes:
+    def _build_hmac_message(self, counter: int, cmd_data: bytes, is_rx: bool = False) -> bytes:
         """Build message for HMAC signature calculation.
 
         Based on Android ToaProcessor.d() and CryptoUtils.b():
-        HMAC message = counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
+        - TX (outgoing): counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
+        - RX (incoming): counter_bytes + {0} + length_byte + cmd_data (padded to 32 bytes)
 
         Args:
             counter: Transaction counter
             cmd_data: Command data (command byte + payload)
+            is_rx: True for received responses, False for sent commands
 
         Returns:
             32-byte message for HMAC calculation
@@ -964,14 +1003,65 @@ class TileBleClient:
         # Convert counter to 4-byte little-endian (BytesUtils.au())
         counter_bytes = counter.to_bytes(4, byteorder='little')
 
-        # Build message: counter + {1} + length + data
-        message = counter_bytes + bytes([1]) + bytes([len(cmd_data)]) + cmd_data
+        # Build message: counter + {1 for TX, 0 for RX} + length + data
+        direction_byte = bytes([0]) if is_rx else bytes([1])
+        message = counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
 
         # Pad to 32 bytes
         if len(message) < 32:
             message = message + bytes(32 - len(message))
 
         return message
+
+    def _verify_response_hmac(self, response: bytes) -> tuple[bool, bytes]:
+        """Verify HMAC signature on a received response.
+
+        Based on Android ToaProcessor.a(ToaTransaction, boolean).
+        Response format: [channel_byte, data..., hmac(4 bytes)]
+
+        Args:
+            response: Full response including channel byte and HMAC
+
+        Returns:
+            Tuple of (verified: bool, data_without_hmac: bytes)
+        """
+        if len(response) < 6:  # Minimum: channel + 1 byte data + 4 byte HMAC
+            _LOGGER.warning("⚠️ Response too short for HMAC verification: %d bytes", len(response))
+            return (False, response)
+
+        # Split response: [channel_byte, data..., hmac]
+        # Last 4 bytes are HMAC, everything before is data
+        data_with_channel = response[:-4]
+        received_hmac = response[-4:]
+
+        # Data without channel byte (for HMAC calculation)
+        # ToaProcessor removes channel byte before HMAC calculation
+        data_without_channel = data_with_channel[1:]
+
+        # Increment RX counter BEFORE verification
+        # This matches Android: line 100 increments cuR, then line 101 calls HMAC verification
+        self._rx_counter += 1
+
+        # Calculate expected HMAC using RX counter
+        hmac_msg = self._build_hmac_message(self._rx_counter, data_without_channel, is_rx=True)
+        expected_hmac = hmac.new(self._channel_key, hmac_msg, hashlib.sha256).digest()[:4]
+
+        _LOGGER.warning("🔧 RX HMAC verification:")
+        _LOGGER.warning("   RX counter: %d", self._rx_counter)
+        _LOGGER.warning("   Data (no channel): %s", data_without_channel.hex())
+        _LOGGER.warning("   HMAC message: %s", hmac_msg.hex())
+        _LOGGER.warning("   Expected HMAC: %s", expected_hmac.hex())
+        _LOGGER.warning("   Received HMAC: %s", received_hmac.hex())
+
+        # Verify HMAC matches
+        if expected_hmac == received_hmac:
+            _LOGGER.warning("✅ RX HMAC verified!")
+            return (True, data_with_channel)
+        else:
+            _LOGGER.error("❌ RX HMAC mismatch!")
+            # Decrement counter since verification failed
+            self._rx_counter -= 1
+            return (False, data_with_channel)
 
     def _build_ring_command(
         self,

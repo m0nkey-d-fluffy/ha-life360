@@ -626,6 +626,17 @@ class TileBleClient:
 
             _LOGGER.warning("✅ TDI-based authentication successful!")
 
+            # Clear response queue from authentication phase to avoid getting old responses
+            cleared = 0
+            while not self._response_queue.empty():
+                try:
+                    self._response_queue.get_nowait()
+                    cleared += 1
+                except:
+                    break
+            if cleared > 0:
+                _LOGGER.warning("🔧 Cleared %d old responses from queue", cleared)
+
             # Step 5: Open channel to get channel data for encryption key
             _LOGGER.warning("🔧 Step 4: Opening communication channel...")
             channel_data = await self._open_channel()
@@ -687,17 +698,20 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Channel open response: %s (length=%d)", response.hex(), len(response))
 
-            # Parse response: MEP_ID + response_byte + channel_byte + channel_data
-            if len(response) < 7:  # Min: 4 (MEP) + 1 (response) + 1 (channel) + 1 (data)
+            # Parse response: MEP_ID (5 bytes) + response_byte (1 byte) + channel_byte + channel_data
+            if len(response) < 7:  # Min: 5 (MEP) + 1 (response) + 1 (channel) + 0+ (data)
                 raise ValueError(f"Response too short: {len(response)} bytes")
 
-            # Verify MEP header and response byte
-            if response[:5] != MEP_CONNECTION_ID + bytes([0x12]):
-                raise ValueError(f"Invalid response header: {response[:5].hex()}")
+            # Verify MEP header (5 bytes) and response byte (should be 0x12 for channel open response)
+            expected_header = MEP_CONNECTION_ID + bytes([0x12])  # 6 bytes total
+            if response[:6] != expected_header:
+                actual = response[:6].hex()
+                expected = expected_header.hex()
+                raise ValueError(f"Invalid response header: got {actual}, expected {expected}")
 
             # Extract channel byte and channel data
-            channel_byte = response[5]
-            channel_data = response[6:]
+            channel_byte = response[6]
+            channel_data = response[7:]
 
             _LOGGER.warning("✅ Channel opened successfully!")
             _LOGGER.warning("   Channel byte: 0x%02x", channel_byte)

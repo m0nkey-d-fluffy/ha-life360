@@ -783,9 +783,12 @@ class TileBleClient:
             # This matches the increment-before-use pattern
             self._tx_counter += 1
 
+            # CRITICAL: Android line 56-58 shows HMAC is calculated over bArr3 which INCLUDES channel byte!
+            # bArr3 = [channel_byte, command, payload] (line 57 copies bArr.length + 1 bytes)
+            # So we must include channel_byte in HMAC calculation
             sig_data = self._build_hmac_message(
                 self._tx_counter,
-                bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
+                bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
@@ -886,8 +889,11 @@ class TileBleClient:
             # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
             self._tx_counter += 1
 
-            # Calculate HMAC signature
-            sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
+            # Calculate HMAC signature - MUST include channel byte (Android line 57)
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                bytes([self._channel_byte]) + cmd_payload
+            )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
             # Final command: channel_byte + payload + signature
@@ -998,9 +1004,12 @@ class TileBleClient:
         - TX (outgoing): counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
         - RX (incoming): counter_bytes + {0} + length_byte + cmd_data (padded to 32 bytes)
 
+        CRITICAL: cmd_data must include the channel byte! (Android line 57 copies bArr.length + 1)
+        Format: [channel_byte, command, payload...]
+
         Args:
             counter: Transaction counter
-            cmd_data: Command data (command byte + payload)
+            cmd_data: Command data INCLUDING channel byte: [channel_byte, command, payload...]
             is_rx: True for received responses, False for sent commands
 
         Returns:
@@ -1110,8 +1119,12 @@ class TileBleClient:
         self._tx_counter += 1
 
         # Calculate HMAC signature using channel encryption key
-        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
-        sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
+        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + [channel_byte + data]
+        # CRITICAL: Android line 57 includes channel byte in HMAC calculation
+        sig_data = self._build_hmac_message(
+            self._tx_counter,
+            bytes([self._channel_byte]) + cmd_payload
+        )
         signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
         # Build final command: channel_byte + cmd_payload + signature

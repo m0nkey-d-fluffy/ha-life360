@@ -1082,9 +1082,16 @@ class TileBleClient:
     def _build_hmac_message(self, counter: int, cmd_data: bytes, is_rx: bool = False) -> bytes:
         """Build message for HMAC signature calculation.
 
-        Based on Android ToaProcessor.d() and CryptoUtils.b():
-        - TX (outgoing): counter_bytes + {1} + length_byte + cmd_data (padded to 32 bytes)
-        - RX (incoming): counter_bytes + {0} + length_byte + cmd_data (padded to 32 bytes)
+        Based on Android ToaProcessor.d() line 58 and CryptoUtils.b():
+        HMAC input: connection_id + counter_bytes + direction + length_byte + cmd_data (padded to 32 bytes)
+
+        Java: bcK.b(this.cuO, BytesUtils.au(this.cuQ), cuM, new byte[]{length}, bArr3)
+        Where:
+        - this.cuO = connection_id (4 bytes: the last 4 bytes of MEP_CONNECTION_ID)
+        - BytesUtils.au(this.cuQ) = counter as 4-byte little-endian
+        - cuM = {1} for TX, cuN = {0} for RX (direction byte)
+        - new byte[]{length} = payload length
+        - bArr3 = [command, payload...]
 
         CRITICAL: cmd_data is [command, payload...] WITHOUT channel byte!
         Android flow:
@@ -1099,12 +1106,16 @@ class TileBleClient:
         Returns:
             32-byte message for HMAC calculation
         """
+        # CRITICAL: Connection ID for HMAC is the LAST 4 bytes of MEP_CONNECTION_ID (00ffffffff)
+        # ToaProcessor.cuO is initialized from the connection ID
+        connection_id_for_hmac = self._connection_id[-4:]  # Last 4 bytes: ffffffff
+
         # Convert counter to 4-byte little-endian (BytesUtils.au())
         counter_bytes = counter.to_bytes(4, byteorder='little')
 
-        # Build message: counter + {1 for TX, 0 for RX} + length + data
+        # Build message: connection_id + counter + {1 for TX, 0 for RX} + length + data
         direction_byte = bytes([0]) if is_rx else bytes([1])
-        message = counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
+        message = connection_id_for_hmac + counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
 
         # Pad to 32 bytes
         if len(message) < 32:

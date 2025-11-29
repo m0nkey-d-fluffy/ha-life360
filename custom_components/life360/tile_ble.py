@@ -669,19 +669,8 @@ class TileBleClient:
             self._channel_key = self._derive_channel_encryption_key(channel_data)
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
-            # Step 7: Establish channel for subsequent commands
-            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
-            if not await self._establish_channel():
-                _LOGGER.error("❌ Channel establishment failed")
-                return False
-
-            _LOGGER.warning("✅ Channel established!")
-
-            # Step 8: Update BLE connection parameters for optimal ringing
-            # BLE capture shows this is sent before ring command
-            _LOGGER.warning("🔧 Step 6: Updating connection parameters for ringing...")
-            if not await self._update_connection_params():
-                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
+            # EXPERIMENTAL: Skip channel establishment and go straight to ring
+            _LOGGER.warning("🧪 EXPERIMENTAL: Skipping channel establishment, will send ring directly")
 
             _LOGGER.warning("✅ Ready for ring command!")
             return True
@@ -809,21 +798,13 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
             _LOGGER.warning("🔧 Sending channel establishment at: %.3f", asyncio.get_event_loop().time())
-
-            # EXPERIMENTAL: Try sending 3 times in case of packet loss
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            await asyncio.sleep(0.05)
-            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            await asyncio.sleep(0.05)
-            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-
             _LOGGER.warning("🔧 Channel establishment write completed at: %.3f", asyncio.get_event_loop().time())
             _LOGGER.warning("📥 Waiting for channel establishment response...")
             _LOGGER.warning("   Queue size before wait: %d", self._response_queue.qsize())
             _LOGGER.warning("   Timeout: 2.0 seconds")
             _LOGGER.warning("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
             _LOGGER.warning("   🔍 NOTE: If no response arrives, check if Tile firmware rejects HMAC or if BLE notifications failed")
-            _LOGGER.warning("   🧪 EXPERIMENTAL: Sent command 3 times to rule out packet loss")
 
             # Wait for channel establishment response
             # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]

@@ -1078,16 +1078,13 @@ class TileBleClient:
         volume: TileVolume = TileVolume.MED,
         duration_seconds: int = 30,
     ) -> bytes:
-        """Build the ring/find command using channel-based SONG command.
+        """Build the ring/find command.
 
-        Based on BLE capture: 02 05 02 01 03 1e [4-byte-hmac]
-        - Channel byte: 0x02
-        - Command: 0x05 (SONG)
-        - Transaction: 0x02 (RING)
-        - Volume type: 0x01
-        - Volume level: volume value (1=LOW, 2=MED, 3=HIGH)
-        - Duration: seconds
-        - HMAC: 4-byte signature
+        EXPERIMENTAL: Trying BOTH command formats:
+        1. SONG (0x05) - from BLE capture
+        2. TRM (0x18) - from Android decompiled code
+
+        This Tile might need TRM instead of SONG.
 
         Args:
             volume: Ring volume level
@@ -1096,19 +1093,17 @@ class TileBleClient:
         Returns:
             Command bytes (channel-based with HMAC)
         """
-        SONG_CMD = 0x05
-        RING_TRANSACTION = 0x02
-        VOLUME_TYPE = 0x01
+        # TRY TRM COMMAND (0x18 / 24 decimal)
+        TRM_CMD = 0x18  # Tile Ring Module
+        TRM_START_RING = 0x01  # Start ringing transaction
 
-        # Build command data (without channel byte or HMAC)
-        # This is what goes into the HMAC calculation
+        # TRM format might be simpler - just command + transaction
         cmd_payload = bytes([
-            SONG_CMD,
-            RING_TRANSACTION,
-            VOLUME_TYPE,
-            volume.value,  # Volume level (1-3)
-            duration_seconds,  # Duration in seconds
+            TRM_CMD,
+            TRM_START_RING,
         ])
+
+        _LOGGER.warning("🔧 EXPERIMENTAL: Using TRM (0x18) ring command instead of SONG")
 
         # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
         self._tx_counter += 1

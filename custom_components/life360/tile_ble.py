@@ -736,8 +736,8 @@ class TileBleClient:
         Format: [channel_byte, command, payload, 4-byte-hmac]
         Example: 02 12 13 e15b25de
 
-        NOTE: Channel establishment appears to be a "fire and forget" command that
-        doesn't require a response from the Tile.
+        The Tile responds with: [channel_byte, 0x01, 0x0e, data, hmac]
+        Example response: 02 01 0e 2dde220000000013e1f19a1d
 
         Returns:
             True if channel command sent successfully
@@ -773,10 +773,25 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            _LOGGER.warning("✅ Channel establishment command sent (no response expected)")
+            _LOGGER.warning("🔧 Channel establishment command sent, waiting for response...")
 
-            # Give the Tile a moment to process the channel setup
-            await asyncio.sleep(0.2)
+            # Wait for channel establishment response
+            # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]
+            try:
+                response = await asyncio.wait_for(
+                    self._response_queue.get(), timeout=2.0
+                )
+                _LOGGER.warning("✅ Channel establishment response received: %s", response.hex())
+
+                # Verify it's a channel response (starts with channel_byte + 0x01)
+                if len(response) >= 2 and response[0] == self._channel_byte and response[1] == 0x01:
+                    _LOGGER.warning("✅ Channel establishment confirmed by Tile")
+                else:
+                    _LOGGER.warning("⚠️ Unexpected response format: %s", response.hex())
+
+            except asyncio.TimeoutError:
+                _LOGGER.warning("⚠️ No response to channel establishment (2s timeout)")
+                # Continue anyway - some Tiles might not respond
 
             return True
 

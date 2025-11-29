@@ -613,6 +613,18 @@ class Life360DeviceDeviceTracker(
                     # Get authentication method from cache (keyed by BLE ID)
                     if auth_method := circles_coord._tile_auth_method_cache.get(tile_ble_id):
                         attrs["tile_auth_method"] = auth_method
+
+                    # Get diagnostic data from cache (keyed by BLE ID)
+                    if diagnostics := circles_coord._tile_diagnostic_cache.get(tile_ble_id):
+                        # Add key diagnostic fields to attributes
+                        if "battery_level" in diagnostics:
+                            attrs["tile_battery_percent"] = diagnostics["battery_level"]
+                        if "firmware_version" in diagnostics:
+                            attrs["tile_firmware_version"] = diagnostics["firmware_version"]
+                        if "connection_count" in diagnostics:
+                            attrs["tile_connection_count"] = diagnostics["connection_count"]
+                        if "piezo_seconds" in diagnostics:
+                            attrs["tile_speaker_runtime_seconds"] = diagnostics["piezo_seconds"]
             except Exception as err:
                 # Don't break attributes if cache access fails
                 _LOGGER.debug("Could not access Tile BLE cache for attributes: %s", err)

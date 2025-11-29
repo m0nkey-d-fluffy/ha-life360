@@ -137,6 +137,8 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         self._tile_mac_cache: dict[str, str] = {}
         # Cache for Tile BLE authentication methods (Tile BLE ID -> method number)
         self._tile_auth_method_cache: dict[str, int] = {}
+        # Cache for Tile diagnostic data (Tile BLE ID -> diagnostic dict)
+        self._tile_diagnostic_cache: dict[str, dict[str, Any]] = {}
         # Cache for device names (Life360 device ID -> name)
         self._device_name_cache: dict[str, str] = {}
         # Cache for device avatars (Life360 device ID -> avatar URL)
@@ -2073,7 +2075,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         if known_auth_method:
             _LOGGER.info("⚡ Using cached auth method %d for faster authentication", known_auth_method)
 
-        result = await ring_tile_ble(
+        result, diagnostics = await ring_tile_ble(
             ble_device_id,
             auth_key,
             volume=TileVolume.HIGH,  # Use HIGH volume for audible ringing
@@ -2082,6 +2084,14 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             on_auth_success=on_auth_success,
             known_auth_method=known_auth_method,
         )
+
+        # Cache diagnostic data if retrieved
+        if diagnostics:
+            self._tile_diagnostic_cache[ble_device_id] = diagnostics
+            _LOGGER.info("💾 Cached diagnostic data for Tile %s: Battery=%d%%, FW=v%d",
+                        ble_device_id[:8],
+                        diagnostics.get('battery_level', 0),
+                        diagnostics.get('firmware_version', 0))
 
         # If authentication failed and we have a Life360 auth key, try that as fallback
         if not result and auth_source == "life360":
@@ -2092,7 +2102,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             life360_auth_key = self._tile_auth_cache_life360.get(ble_device_id)
             if life360_auth_key and life360_auth_key != auth_key:
                 _LOGGER.warning("⚠️ Tile API auth failed, trying Life360 auth key as fallback...")
-                result = await ring_tile_ble(
+                result, diagnostics = await ring_tile_ble(
                     ble_device_id,
                     life360_auth_key,
                     volume=TileVolume.MED,
@@ -2105,6 +2115,10 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                     _LOGGER.info("✅ Life360 auth key worked! Updating cache to use Life360 source")
                     self._tile_auth_cache[ble_device_id] = life360_auth_key
                     self._tile_auth_source_cache[ble_device_id] = "life360"
+
+                    # Cache diagnostic data if retrieved
+                    if diagnostics:
+                        self._tile_diagnostic_cache[ble_device_id] = diagnostics
 
         if result:
             _LOGGER.info("✅ Tile BLE ring successful for device %s", device_id)

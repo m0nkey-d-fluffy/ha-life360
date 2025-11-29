@@ -141,6 +141,10 @@ class TileBleClient:
         self._tx_counter: int = 0  # Counter for sent commands (cuQ in Android)
         self._rx_counter: int = 0  # Counter for received responses (cuR in Android)
 
+        # Diagnostic data from TDG command
+        self._diagnostic_data: dict[str, Any] | None = None
+        self._last_diagnostic_time: float = 0
+
     def _tile_id_to_mac(self, tile_id: str) -> str:
         """Convert Tile ID to expected BLE MAC address.
 
@@ -892,8 +896,80 @@ class TileBleClient:
             _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
             return False
 
+    def _parse_diagnostic_data(self, data: bytes) -> dict[str, Any] | None:
+        """Parse 20-byte TDG diagnostic response.
+
+        Based on Android DiagnosticCharacteristic.java structure:
+        Offset  Field                Size    Description
+        ------  -------------------  ------  -----------
+        0       batteryLevel         1 byte  0-100 percentage
+        1       advInterval          1 byte  Advertisement interval
+        2       authFailCount        1 byte  Failed auth attempts
+        3       resetReason          1 byte  Last reset reason
+        4       ppm + version        1 byte  4 bits each
+        5       mode + rfu           1 byte  4 bits each
+        6-7     connectionCount      2 bytes Little-endian
+        8-11    piezoMs              4 bytes Little-endian (speaker runtime)
+        12-15   advEventCount        4 bytes Little-endian
+        16-19   connEventCount       4 bytes Little-endian
+
+        Args:
+            data: 20-byte diagnostic data
+
+        Returns:
+            Dictionary with parsed diagnostic fields, or None if invalid
+        """
+        if len(data) < 20:
+            _LOGGER.debug("TDG response too short: %d bytes (expected 20)", len(data))
+            return None
+
+        try:
+            # Extract fields
+            battery_level = data[0]
+            adv_interval = data[1]
+            auth_fail_count = data[2]
+            reset_reason = data[3]
+
+            # Byte 4: ppm (low 4 bits) + version (high 4 bits)
+            ppm = data[4] & 0x0F
+            version = (data[4] >> 4) & 0x0F
+
+            # Byte 5: mode (low 4 bits) + rfu (high 4 bits)
+            mode = data[5] & 0x0F
+            rfu = (data[5] >> 4) & 0x0F
+
+            # Multi-byte fields (little-endian)
+            connection_count = struct.unpack('<H', data[6:8])[0]
+            piezo_ms = struct.unpack('<I', data[8:12])[0]
+            adv_event_count = struct.unpack('<I', data[12:16])[0]
+            conn_event_count = struct.unpack('<I', data[16:20])[0]
+
+            diagnostics = {
+                'battery_level': battery_level,
+                'adv_interval': adv_interval,
+                'auth_fail_count': auth_fail_count,
+                'reset_reason': reset_reason,
+                'ppm': ppm,
+                'firmware_version': version,
+                'mode': mode,
+                'connection_count': connection_count,
+                'piezo_ms': piezo_ms,
+                'piezo_seconds': round(piezo_ms / 1000, 1),
+                'adv_event_count': adv_event_count,
+                'conn_event_count': conn_event_count,
+            }
+
+            _LOGGER.debug("📊 Parsed TDG diagnostics: battery=%d%%, version=%d, connections=%d, speaker_time=%.1fs",
+                         battery_level, version, connection_count, piezo_ms / 1000)
+
+            return diagnostics
+
+        except Exception as err:
+            _LOGGER.error("Failed to parse TDG diagnostic data: %s", err, exc_info=True)
+            return None
+
     async def _send_tdg_diagnostic(self) -> bool:
-        """Send TDG (Tile Diagnostic) command.
+        """Send TDG (Tile Diagnostic) command and parse response.
 
         Based on BLE capture frame 292 which shows this happens after channel establishment.
         Command: 02 0a 01 [HMAC]
@@ -903,7 +979,7 @@ class TileBleClient:
         Android code: Line 585 JX() - b((byte) 10, new TdgTransaction().Lc())
 
         Returns:
-            True if command sent successfully
+            True if command sent successfully and response parsed
         """
         try:
             TDG_CMD = 0x0a  # 10 decimal - Tile Diagnostic
@@ -925,16 +1001,38 @@ class TileBleClient:
             # Final command: channel_byte + payload + signature
             cmd = bytes([self._channel_byte]) + cmd_payload + signature
 
-            _LOGGER.debug(" Sending TDG diagnostic...")
-            _LOGGER.debug("   TX counter: %d", self._tx_counter)
-            _LOGGER.debug("   Command: %s", cmd.hex())
+            _LOGGER.debug("Sending TDG diagnostic (TX counter: %d)", self._tx_counter)
 
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            _LOGGER.debug("TDG diagnostic sent")
 
-            # Don't wait for response - continue with flow
+            # Wait for response
+            try:
+                response = await asyncio.wait_for(self._response_queue.get(), timeout=2.0)
+                _LOGGER.debug("TDG response received: %s (%d bytes)", response.hex(), len(response))
+
+                # Parse response
+                # Format: [channel_byte] [TDG_CMD] [response_type] [20_bytes_diagnostic_data] [HMAC(4)]
+                if len(response) >= 27:  # channel(1) + cmd(1) + type(1) + data(20) + hmac(4)
+                    # Extract diagnostic data (skip channel, cmd, type bytes)
+                    diagnostic_bytes = response[3:23]
+
+                    # Parse diagnostic data
+                    self._diagnostic_data = self._parse_diagnostic_data(diagnostic_bytes)
+                    if self._diagnostic_data:
+                        import time
+                        self._last_diagnostic_time = time.time()
+                        _LOGGER.info("✅ TDG diagnostic received: Battery=%d%%, FW=v%d",
+                                    self._diagnostic_data['battery_level'],
+                                    self._diagnostic_data['firmware_version'])
+                        return True
+                else:
+                    _LOGGER.debug("TDG response too short for diagnostic data: %d bytes", len(response))
+
+            except asyncio.TimeoutError:
+                _LOGGER.debug("TDG response timeout (2s) - continuing anyway")
+
+            # Don't fail the flow if we didn't get diagnostics
             await asyncio.sleep(0.1)
-
             return True
 
         except Exception as err:
@@ -1461,6 +1559,33 @@ class TileBleClient:
             _LOGGER.error("Error sending stop command: %s", err)
             return False
 
+    def get_battery_level(self) -> int | None:
+        """Get the current battery level percentage.
+
+        Returns:
+            Battery level (0-100) or None if not available
+        """
+        if self._diagnostic_data:
+            return self._diagnostic_data.get('battery_level')
+        return None
+
+    def get_diagnostics(self) -> dict[str, Any] | None:
+        """Get full diagnostic data from the Tile.
+
+        Returns diagnostic information including:
+        - battery_level: Battery percentage (0-100)
+        - firmware_version: Firmware version number
+        - connection_count: Number of BLE connections
+        - piezo_seconds: Total speaker runtime in seconds
+        - adv_interval: Advertisement interval
+        - auth_fail_count: Failed authentication attempts
+        - And more...
+
+        Returns:
+            Dictionary with diagnostic data, or None if not available
+        """
+        return self._diagnostic_data
+
 
 async def ring_tile_ble(
     tile_id: str,
@@ -1470,7 +1595,7 @@ async def ring_tile_ble(
     scan_timeout: float = 10.0,
     on_auth_success: Any | None = None,
     known_auth_method: int | None = None,
-) -> bool:
+) -> tuple[bool, dict[str, Any] | None]:
     """High-level function to ring a Tile via BLE.
 
     Args:
@@ -1483,11 +1608,13 @@ async def ring_tile_ble(
         known_auth_method: Optional previously successful auth method number (1-20)
 
     Returns:
-        True if successfully rang the Tile
+        Tuple of (success: bool, diagnostics: dict | None)
+        - success: True if ring command was sent successfully
+        - diagnostics: Diagnostic data from Tile (battery, firmware, etc.) or None
     """
     if not BLEAK_AVAILABLE:
         _LOGGER.error("❌ bleak library not available for BLE communication")
-        return False
+        return (False, None)
 
     _LOGGER.info("═══════════════════════════════════════════════════════════")
     _LOGGER.info("Starting Tile BLE ring operation for device: %s", tile_id)
@@ -1500,11 +1627,11 @@ async def ring_tile_ble(
             _LOGGER.debug("Auth key decoded: %d bytes", len(auth_key))
         except ValueError as err:
             _LOGGER.error("❌ Invalid auth key hex string: %s", err)
-            return False
+            return (False, None)
 
     if len(auth_key) != 16:
         _LOGGER.error("❌ Invalid auth key length: %d (expected 16)", len(auth_key))
-        return False
+        return (False, None)
 
     client = TileBleClient(
         tile_id,
@@ -1519,26 +1646,34 @@ async def ring_tile_ble(
         if not device:
             _LOGGER.warning("❌ Tile %s not found in BLE range", tile_id)
             _LOGGER.info("💡 Tip: Make sure the Tile is nearby and has battery power")
-            return False
+            return (False, None)
 
         # Connect
         if not await client.connect(device):
             _LOGGER.error("❌ Failed to connect to Tile")
-            return False
+            return (False, None)
 
         # Ring it
         success = await client.ring(volume, duration_seconds)
+
+        # Get diagnostic data
+        diagnostics = client.get_diagnostics()
+
         if success:
             _LOGGER.info("═══════════════════════════════════════════════════════════")
             _LOGGER.info("✅ Tile BLE ring operation completed successfully!")
+            if diagnostics:
+                _LOGGER.info("📊 Diagnostic data retrieved: Battery=%d%%, FW=v%d",
+                           diagnostics.get('battery_level', 0),
+                           diagnostics.get('firmware_version', 0))
             _LOGGER.info("═══════════════════════════════════════════════════════════")
         else:
             _LOGGER.error("❌ Tile ring operation failed")
-        return success
+        return (success, diagnostics)
 
     except Exception as err:
         _LOGGER.error("❌ Unexpected error during Tile BLE operation: %s", err, exc_info=True)
-        return False
+        return (False, None)
 
     finally:
         await client.disconnect()

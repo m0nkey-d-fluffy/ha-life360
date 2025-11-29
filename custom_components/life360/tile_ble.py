@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
@@ -38,9 +39,10 @@ MEP_COMMAND_CHAR_UUID = "9d410018-35d6-f4dd-ba60-e7bd8dc491c0"
 MEP_RESPONSE_CHAR_UUID = "9d410019-35d6-f4dd-ba60-e7bd8dc491c0"
 TILE_ID_CHAR_UUID = "9d410007-35d6-f4dd-ba60-e7bd8dc491c0"
 
-# MEP (Message Exchange Protocol) connection ID for connectionless commands
-# Format: 00 (connectionless marker) + 4-byte connection ID
-MEP_CONNECTION_ID = bytes.fromhex("00ffffffff")
+# MEP (Message Exchange Protocol) Format:
+# Connectionless commands: 0x00 + 4-byte-random-connection-id + command + payload
+# Channel commands: channel_byte + command + payload + HMAC
+# The 4-byte connection ID is randomly generated per session (see __init__)
 
 
 class TileVolume(IntEnum):
@@ -133,7 +135,9 @@ class TileBleClient:
         self._channel_key: bytes = b""
         self._channel_byte: int = 0
         self._channel_data: bytes = b""
-        self._connection_id: bytes = MEP_CONNECTION_ID
+        # Generate random 4-byte connection ID per session (matches Android TileCryptoManager.Kz())
+        # This is used in connectionless MEP header (0x00 + connection_id) and in HMAC calculation
+        self._connection_id: bytes = secrets.token_bytes(4)
         self._tx_counter: int = 0  # Counter for sent commands (cuQ in Android)
         self._rx_counter: int = 0  # Counter for received responses (cuR in Android)
 
@@ -479,8 +483,10 @@ class TileBleClient:
             _LOGGER.warning("🔐 Starting TDI-based Tile authentication handshake...")
             _LOGGER.warning("🔧 Using MEP (Message Exchange Protocol) format")
 
-            # MEP connectionless packet format: [0x00, 0xFF, 0xFF, 0xFF, 0xFF, prefix, data]
-            MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+            # MEP connectionless packet format: [0x00, connection_id(4 bytes), command, payload]
+            # Connection ID is randomly generated per session (matches Android TileCryptoManager.Kz())
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            _LOGGER.warning("🔧 Session connection ID: %s", self._connection_id.hex())
 
             # Step 1: Send ALL TDI (Tile Data Information) requests
             # BLE capture shows Android sends 4 TDI requests before randA!
@@ -736,11 +742,12 @@ class TileBleClient:
         try:
             CHANNEL_OPEN_CMD = 0x10  # 16 decimal
 
-            # Build MEP connectionless command
-            cmd = MEP_CONNECTION_ID + bytes([CHANNEL_OPEN_CMD]) + self._rand_a
+            # Build MEP connectionless command: 0x00 + connection_id + command + randA
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            cmd = MEP_CONNECTIONLESS + bytes([CHANNEL_OPEN_CMD]) + self._rand_a
 
             _LOGGER.warning("🔧 Channel open command: %s (length=%d)", cmd.hex(), len(cmd))
-            _LOGGER.warning("   Connection ID: %s", MEP_CONNECTION_ID.hex())
+            _LOGGER.warning("   Connection ID: %s", self._connection_id.hex())
             _LOGGER.warning("   Command: 0x%02x", CHANNEL_OPEN_CMD)
             _LOGGER.warning("   RandA: %s", self._rand_a.hex())
 
@@ -762,7 +769,8 @@ class TileBleClient:
                 raise ValueError(f"Response too short: {len(response)} bytes")
 
             # Verify MEP header (5 bytes) and response byte (should be 0x12 for channel open response)
-            expected_header = MEP_CONNECTION_ID + bytes([0x12])  # 6 bytes total
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            expected_header = MEP_CONNECTIONLESS + bytes([0x12])  # 6 bytes total
             if response[:6] != expected_header:
                 actual = response[:6].hex()
                 expected = expected_header.hex()
@@ -1106,9 +1114,9 @@ class TileBleClient:
         Returns:
             32-byte message for HMAC calculation
         """
-        # CRITICAL: Connection ID for HMAC is the LAST 4 bytes of MEP_CONNECTION_ID (00ffffffff)
-        # ToaProcessor.cuO is initialized from the connection ID
-        connection_id_for_hmac = self._connection_id[-4:]  # Last 4 bytes: ffffffff
+        # CRITICAL: Connection ID for HMAC is the 4-byte random session ID
+        # ToaProcessor.cuO is initialized with this value (from TileCryptoManager.Kz())
+        connection_id_for_hmac = self._connection_id  # 4-byte random session ID
 
         # Convert counter to 4-byte little-endian (BytesUtils.au())
         counter_bytes = counter.to_bytes(4, byteorder='little')

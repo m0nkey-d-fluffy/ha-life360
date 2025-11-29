@@ -808,13 +808,21 @@ class TileBleClient:
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
             _LOGGER.warning("🔧 Sending channel establishment at: %.3f", asyncio.get_event_loop().time())
+
+            # EXPERIMENTAL: Try sending 3 times in case of packet loss
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            await asyncio.sleep(0.05)
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            await asyncio.sleep(0.05)
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+
             _LOGGER.warning("🔧 Channel establishment write completed at: %.3f", asyncio.get_event_loop().time())
             _LOGGER.warning("📥 Waiting for channel establishment response...")
             _LOGGER.warning("   Queue size before wait: %d", self._response_queue.qsize())
             _LOGGER.warning("   Timeout: 2.0 seconds")
             _LOGGER.warning("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
             _LOGGER.warning("   🔍 NOTE: If no response arrives, check if Tile firmware rejects HMAC or if BLE notifications failed")
+            _LOGGER.warning("   🧪 EXPERIMENTAL: Sent command 3 times to rule out packet loss")
 
             # Wait for channel establishment response
             # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]

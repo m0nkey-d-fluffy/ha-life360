@@ -385,6 +385,11 @@ class TileBleClient:
 
     def _handle_response(self, sender: Any, data: bytes) -> None:
         """Handle response from Tile."""
+        # ALWAYS log raw data first, even before any processing
+        import sys
+        sys.stderr.write(f"\n🔴 RAW NOTIFICATION: {data.hex()} (len={len(data)})\n")
+        sys.stderr.flush()
+
         _LOGGER.warning("📨 === TILE RESPONSE RECEIVED ===")
         _LOGGER.warning("   From: %s", sender)
         _LOGGER.warning("   Data: %s", data.hex())
@@ -669,6 +674,10 @@ class TileBleClient:
             self._channel_key = self._derive_channel_encryption_key(channel_data)
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
+            # Small delay to let Tile process channel open (observed in BLE capture)
+            _LOGGER.warning("⏱️ Waiting 100ms for Tile to process channel open...")
+            await asyncio.sleep(0.1)
+
             # Step 7: Establish channel with signed command
             # BLE capture shows this is CRITICAL - Frame 289-291
             _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
@@ -678,12 +687,18 @@ class TileBleClient:
 
             _LOGGER.warning("✅ Channel established!")
 
+            # Small delay after channel establishment
+            await asyncio.sleep(0.1)
+
             # Step 8: Update connection parameters for optimal ringing
             # BLE capture shows this BEFORE ring command - Frame 300
             _LOGGER.warning("🔧 Step 6: Updating connection parameters...")
             if not await self._update_connection_params():
                 _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
                 # Don't fail - connection update might not be critical
+
+            # Small delay after connection update
+            await asyncio.sleep(0.1)
 
             _LOGGER.warning("✅ Ready for ring command!")
             return True

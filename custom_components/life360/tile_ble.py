@@ -670,20 +670,24 @@ class TileBleClient:
             _LOGGER.warning("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
             # Step 7: Establish channel for subsequent commands
-            _LOGGER.warning("🔧 Step 5: Establishing communication channel...")
-            if not await self._establish_channel():
-                _LOGGER.error("❌ Channel establishment failed")
-                return False
+            # EXPERIMENTAL: Skip channel establishment - Tile doesn't respond to it
+            # Try sending ring directly after channel open
+            _LOGGER.warning("🔧 Step 5: SKIPPING channel establishment (Tile doesn't respond)")
+            _LOGGER.warning("   Will try ring command directly with TX counter=0")
+            # if not await self._establish_channel():
+            #     _LOGGER.error("❌ Channel establishment failed")
+            #     return False
 
-            _LOGGER.warning("✅ Channel established!")
+            _LOGGER.warning("✅ Ready for ring (skipped channel establishment)!")
 
             # Step 8: Update BLE connection parameters for optimal ringing
-            # BLE capture shows this is sent before ring command
-            _LOGGER.warning("🔧 Step 6: Updating connection parameters for ringing...")
-            if not await self._update_connection_params():
-                _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
+            # EXPERIMENTAL: Also skip connection params to test ring directly
+            _LOGGER.warning("🔧 Step 6: SKIPPING connection parameter update")
+            _LOGGER.warning("   Testing ring command directly after channel open")
+            # if not await self._update_connection_params():
+            #     _LOGGER.warning("⚠️ Connection parameter update failed (continuing anyway)")
 
-            _LOGGER.warning("✅ Ready for ring command!")
+            _LOGGER.warning("✅ Ready for ring command (minimal setup)!")
             return True
 
         except Exception as err:
@@ -779,27 +783,23 @@ class TileBleClient:
             cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
 
             # Calculate HMAC signature using channel encryption key
-            # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
-            # CRITICAL: Try counter=0 for first channel command
-            # Android might initialize cuQ=0 and use it before incrementing
+            # Based on ToaProcessor: line 54 increments cuQ, line 58 uses incremented value
+            # So: increment FIRST, then use for HMAC calculation
+            self._tx_counter += 1
+
             sig_data = self._build_hmac_message(
-                self._tx_counter,  # Use current value (0) before incrementing
+                self._tx_counter,  # Use AFTER increment (Android behavior)
                 bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
-            _LOGGER.warning("🔧 Channel establishment command:")
-            _LOGGER.warning("   TX counter (BEFORE increment): %d", self._tx_counter)
-            _LOGGER.warning("   HMAC data: %s", sig_data.hex())
-            _LOGGER.warning("   Signature: %s", signature.hex())
-
-            # NOW increment for next command
-            self._tx_counter += 1
-            _LOGGER.warning("   TX counter (AFTER increment): %d", self._tx_counter)
-
             # Final command: cmd_data + signature
             cmd = cmd_data + signature
 
+            _LOGGER.warning("🔧 Channel establishment command:")
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   HMAC data: %s", sig_data.hex())
+            _LOGGER.warning("   Signature: %s", signature.hex())
             _LOGGER.warning("   Final command: %s (length=%d)", cmd.hex(), len(cmd))
 
             # Send the command directly without waiting for response
@@ -887,7 +887,10 @@ class TileBleClient:
             # Build command payload: command + transaction + params
             cmd_payload = bytes([TCU_CMD, TCU_SET]) + params
 
-            # Calculate HMAC signature using current TX counter BEFORE incrementing
+            # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
             sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
@@ -900,9 +903,6 @@ class TileBleClient:
                           latency, timeout * 10)
             _LOGGER.warning("   TX counter: %d", self._tx_counter)
             _LOGGER.warning("   Command: %s", cmd.hex())
-
-            # Increment TX counter for next command
-            self._tx_counter += 1
 
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
             _LOGGER.warning("✅ Connection parameters update sent")
@@ -1110,7 +1110,10 @@ class TileBleClient:
             duration_seconds,  # Duration in seconds
         ])
 
-        # Calculate HMAC signature using channel encryption key BEFORE incrementing counter
+        # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
+        self._tx_counter += 1
+
+        # Calculate HMAC signature using channel encryption key
         # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
         sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
         signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
@@ -1125,9 +1128,6 @@ class TileBleClient:
         _LOGGER.warning("   HMAC message: %s", sig_data.hex())
         _LOGGER.warning("   Signature: %s", signature.hex())
         _LOGGER.warning("   Final command: %s", cmd.hex())
-
-        # Increment TX counter for next command
-        self._tx_counter += 1
 
         return cmd
 
@@ -1172,13 +1172,8 @@ class TileBleClient:
                 return False
 
         try:
-            # Wait for Tile to be ready for ring command
-            # BLE capture shows 2.5s delay between channel establishment and ring
-            # This allows connection parameters to take effect
-            _LOGGER.warning("⏳ Waiting 2.5s for Tile to be ready for ring command...")
-            await asyncio.sleep(2.5)
-
-            _LOGGER.warning("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
+            # EXPERIMENTAL: Skip delay - testing minimal flow
+            _LOGGER.warning("🔔 Sending ring command immediately (volume=%s, duration=%ds)...", volume.name, duration_seconds)
             cmd = self._build_ring_command(volume, duration_seconds)
 
             # Send ring command directly without waiting for response

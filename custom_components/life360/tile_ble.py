@@ -1114,16 +1114,18 @@ class TileBleClient:
         Returns:
             32-byte message for HMAC calculation
         """
-        # CRITICAL: Connection ID for HMAC is the 4-byte random session ID
-        # ToaProcessor.cuO is initialized with this value (from TileCryptoManager.Kz())
-        connection_id_for_hmac = self._connection_id  # 4-byte random session ID
+        # CRITICAL FIX: Connection ID is NOT part of the HMAC message!
+        # Android ToaProcessor.d() calls: bcK.b(cuO, counter, direction, length, data)
+        # Where cuO (Il() result) is the HMAC KEY, not part of the message!
+        # CryptoUtils.b() concatenates params 2-5 into message, param 1 is the key.
 
         # Convert counter to 4-byte little-endian (BytesUtils.au())
         counter_bytes = counter.to_bytes(4, byteorder='little')
 
-        # Build message: connection_id + counter + {1 for TX, 0 for RX} + length + data
+        # Build message: counter + direction + length + data
+        # Connection ID is NOT included - it was used to derive the channel_key!
         direction_byte = bytes([0]) if is_rx else bytes([1])
-        message = connection_id_for_hmac + counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
+        message = counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
 
         # Pad to 32 bytes
         if len(message) < 32:

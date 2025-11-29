@@ -778,13 +778,13 @@ class TileBleClient:
             # Build command: channel_byte + command + payload
             cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
 
-            # Calculate HMAC signature using channel encryption key
-            # Based on ToaProcessor: line 54 increments cuQ, line 58 uses incremented value
-            # So: increment FIRST, then use for HMAC calculation
+            # CRITICAL: Android ToaProcessor.d() increments counter FIRST (line 54), then uses it (line 58)
+            # So: first command uses counter=1, second uses counter=2, etc.
+            # This matches the increment-before-use pattern
             self._tx_counter += 1
 
             sig_data = self._build_hmac_message(
-                self._tx_counter,  # Use AFTER increment (Android behavior)
+                self._tx_counter,
                 bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
@@ -793,7 +793,7 @@ class TileBleClient:
             cmd = cmd_data + signature
 
             _LOGGER.warning("🔧 Channel establishment command:")
-            _LOGGER.warning("   TX counter: %d", self._tx_counter)
+            _LOGGER.warning("   TX counter: %d (incremented before use)", self._tx_counter)
             _LOGGER.warning("   HMAC data: %s", sig_data.hex())
             _LOGGER.warning("   Signature: %s", signature.hex())
             _LOGGER.warning("   Final command: %s (length=%d)", cmd.hex(), len(cmd))

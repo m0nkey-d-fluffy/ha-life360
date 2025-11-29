@@ -780,20 +780,27 @@ class TileBleClient:
 
             # Calculate HMAC signature using channel encryption key
             # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
-            self._tx_counter += 1
+            # CRITICAL: Try counter=0 for first channel command
+            # Android might initialize cuQ=0 and use it before incrementing
             sig_data = self._build_hmac_message(
-                self._tx_counter,
+                self._tx_counter,  # Use current value (0) before incrementing
                 bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
+            _LOGGER.warning("🔧 Channel establishment command:")
+            _LOGGER.warning("   TX counter (BEFORE increment): %d", self._tx_counter)
+            _LOGGER.warning("   HMAC data: %s", sig_data.hex())
+            _LOGGER.warning("   Signature: %s", signature.hex())
+
+            # NOW increment for next command
+            self._tx_counter += 1
+            _LOGGER.warning("   TX counter (AFTER increment): %d", self._tx_counter)
+
             # Final command: cmd_data + signature
             cmd = cmd_data + signature
 
-            _LOGGER.warning("🔧 Channel establishment command: %s (length=%d)", cmd.hex(), len(cmd))
-            _LOGGER.warning("   TX counter: %d", self._tx_counter)
-            _LOGGER.warning("   HMAC data: %s", sig_data.hex())
-            _LOGGER.warning("   Signature: %s", signature.hex())
+            _LOGGER.warning("   Final command: %s (length=%d)", cmd.hex(), len(cmd))
 
             # Send the command directly without waiting for response
             # Channel establishment is a "fire and forget" command
@@ -801,12 +808,14 @@ class TileBleClient:
                 raise RuntimeError("Not connected to Tile")
 
             _LOGGER.warning("🔧 Sending to Tile: %s", cmd.hex())
+            _LOGGER.warning("🔧 Sending channel establishment at: %.3f", asyncio.get_event_loop().time())
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
-            _LOGGER.warning("🔧 Channel establishment command sent!")
+            _LOGGER.warning("🔧 Channel establishment write completed at: %.3f", asyncio.get_event_loop().time())
             _LOGGER.warning("📥 Waiting for channel establishment response...")
             _LOGGER.warning("   Queue size before wait: %d", self._response_queue.qsize())
             _LOGGER.warning("   Timeout: 2.0 seconds")
             _LOGGER.warning("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
+            _LOGGER.warning("   🔍 NOTE: If no response arrives, check if Tile firmware rejects HMAC or if BLE notifications failed")
 
             # Wait for channel establishment response
             # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]
@@ -878,10 +887,7 @@ class TileBleClient:
             # Build command payload: command + transaction + params
             cmd_payload = bytes([TCU_CMD, TCU_SET]) + params
 
-            # Increment TX counter
-            self._tx_counter += 1
-
-            # Calculate HMAC signature
+            # Calculate HMAC signature using current TX counter BEFORE incrementing
             sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
 
@@ -892,7 +898,11 @@ class TileBleClient:
             _LOGGER.warning("   Intervals: %d-%dms, Latency: %d, Timeout: %dms",
                           int(min_interval * 1.25), int(max_interval * 1.25),
                           latency, timeout * 10)
+            _LOGGER.warning("   TX counter: %d", self._tx_counter)
             _LOGGER.warning("   Command: %s", cmd.hex())
+
+            # Increment TX counter for next command
+            self._tx_counter += 1
 
             await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
             _LOGGER.warning("✅ Connection parameters update sent")
@@ -1100,10 +1110,7 @@ class TileBleClient:
             duration_seconds,  # Duration in seconds
         ])
 
-        # Increment TX counter
-        self._tx_counter += 1
-
-        # Calculate HMAC signature using channel encryption key
+        # Calculate HMAC signature using channel encryption key BEFORE incrementing counter
         # Based on ToaProcessor.d(): HMAC over counter + {1} + length + data
         sig_data = self._build_hmac_message(self._tx_counter, cmd_payload)
         signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
@@ -1118,6 +1125,9 @@ class TileBleClient:
         _LOGGER.warning("   HMAC message: %s", sig_data.hex())
         _LOGGER.warning("   Signature: %s", signature.hex())
         _LOGGER.warning("   Final command: %s", cmd.hex())
+
+        # Increment TX counter for next command
+        self._tx_counter += 1
 
         return cmd
 

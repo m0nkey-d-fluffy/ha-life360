@@ -816,21 +816,18 @@ class TileBleClient:
             # Build command: channel_byte + command + payload
             cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
 
-            # EXPERIMENTAL: Try counter=0 for first channel command (not incrementing)
-            # Android ToaProcessor.d() increments counter FIRST (line 54), but maybe
-            # counters are reset after channel open? Testing empirically.
-            # self._tx_counter += 1  # COMMENTED OUT FOR TESTING
-
-            # Use counter 0 for channel establishment
-            test_counter = 0
-            _LOGGER.warning("🧪 EXPERIMENTAL: Using counter=%d for channel establishment", test_counter)
+            # CRITICAL: Android ToaProcessor.d() increments counter FIRST (line 54), then uses it (line 58)
+            # So: first channel command uses counter=1, second uses counter=2, etc.
+            # Analysis confirms: connectionless commands (TDI, randA, channel open) do NOT increment cuQ
+            # Channel establishment is the FIRST call to ToaProcessor.d(), so cuQ goes from 0 to 1
+            self._tx_counter += 1
 
             # CRITICAL: HMAC is calculated over [command, payload] WITHOUT channel byte!
             # ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() ADDS channel byte
-            # Line 56-58: bArr3 = [command, payload], HMAC over bArr3
-            # Line 35-38: ToaMepProcessor.m() adds channel byte AFTER
+            # Android ToaProcessor.java Line 56-58: bArr3 = [command, payload], HMAC over bArr3
+            # Android ToaMepProcessor.java Line 35-40: m() adds channel byte AFTER
             sig_data = self._build_hmac_message(
-                test_counter,
+                self._tx_counter,
                 bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
             )
             signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
@@ -839,7 +836,7 @@ class TileBleClient:
             cmd = cmd_data + signature
 
             _LOGGER.warning("🔧 Channel establishment command:")
-            _LOGGER.warning("   TX counter: %d (EXPERIMENTAL - using 0 instead of incrementing)", test_counter)
+            _LOGGER.warning("   TX counter: %d (Android cuQ++ before use)", self._tx_counter)
             _LOGGER.warning("   HMAC data: %s", sig_data.hex())
             _LOGGER.warning("   Signature: %s", signature.hex())
             _LOGGER.warning("   Final command: %s (length=%d)", cmd.hex(), len(cmd))

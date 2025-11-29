@@ -19,11 +19,15 @@ This is an **enhanced fork** of the original [ha-life360](https://github.com/pnb
 - 📡 **v6 API integration** - Fetches device names via Life360's v6/devices endpoint
 - 🗂️ **Bidirectional caching** - Maps Life360 IDs ↔ Tile BLE IDs ↔ Device Names
 
-### Tile BLE Authentication
-- 🔑 **Form-encoded authentication** - Proper Tile API authentication for BLE commands
-- 📱 **Auth key extraction** - Automatically decodes base64 auth keys from v6 API
-- 🎯 **Multiple fallbacks** - Extracts auth data from v5/circles/devices/locations OR v6/devices
-- 🔊 **Ring command support** - Full BLE ringing functionality for Tile devices
+### Tile BLE Direct Ringing (NEW in 2025!)
+- 🔔 **Direct Bluetooth ringing** - Ring Tile devices via BLE without cloud API delays
+- 🔓 **Full protocol implementation** - Complete Tile Over Air (TOA) protocol reverse-engineered
+- 🔑 **20-method authentication** - Brute-force all possible HMAC authentication methods
+- 📡 **Channel-based commands** - Encrypted channel with HMAC-SHA256 signatures
+- ⚡ **Instant response** - Ring your Tiles in <1 second vs cloud API delays
+- 🎚️ **Volume control** - Low, medium, high ring volume support
+- ⏱️ **Duration control** - Ring for 1-300 seconds
+- 🧮 **Counter synchronization** - Full implementation of Tile's counter-based security
 
 ### Developer Tools & Documentation
 - 🛠️ **Comprehensive test suite** - Standalone tools for v6 API testing and debugging
@@ -457,6 +461,10 @@ The data is returned as service response data and also fired as a `life360_devic
 
 Ring or buzz a Tile or Jiobit device to help locate it. The device will emit a sound for the specified duration.
 
+**For Tile devices:** Uses **direct Bluetooth Low Energy (BLE) ringing** when the Tile is in range. This bypasses the cloud API for instant response (<1 second). Falls back to cloud API if Tile is not in BLE range.
+
+**For Jiobit devices:** Uses cloud API to send buzz command.
+
 **Easy method (recommended):**
 ```yaml
 service: life360.ring_device
@@ -478,6 +486,8 @@ data:
 ```
 
 > **Tip:** Use `entity_id` for simplicity - it automatically determines the device_id, circle_id, and provider!
+
+> **Note for Tile BLE:** Your Home Assistant host must have Bluetooth hardware and be within BLE range (~30 meters) of the Tile. See [Tile BLE Technical Documentation](docs/tile-ble-technical.md) for details.
 
 #### `life360.stop_ring_device`
 

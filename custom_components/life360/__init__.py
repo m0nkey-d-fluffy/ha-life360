@@ -27,6 +27,7 @@ from .const import (
     DOMAIN,
     SERVICE_BUZZ_JIOBIT,
     SERVICE_DIAGNOSE_TILE_BLE,
+    SERVICE_DIAGNOSE_RING_ALL_BLE,
     SERVICE_GET_DEVICES,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
@@ -402,6 +403,307 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
             return {"tiles_found": 0, "mappings": [], "error": str(err)}
 
     hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_TILE_BLE, diagnose_tile_ble)
+
+    async def diagnose_ring_all_ble(call: ServiceCall) -> dict:
+        """Brute-force diagnostic to ring ALL BLE devices and find Tiles.
+
+        Attempts to connect to every BLE device and try Tile authentication/ring.
+        """
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔥 Service %s called - will try ALL BLE devices!", SERVICE_DIAGNOSE_RING_ALL_BLE)
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_ring_all_ble_devices
+
+            # Get Tile auth keys from all entries
+            auth_keys = {}
+            entries = hass.config_entries.async_entries(DOMAIN)
+            _LOGGER.warning("🔍 Checking %d config entries for Tile auth keys", len(entries))
+
+            for entry in entries:
+                _LOGGER.warning("   Entry: %s", entry.entry_id)
+                if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    _LOGGER.warning("      ❌ No runtime_data")
+                    continue
+
+                coordinator = entry.runtime_data.coordinator
+                _LOGGER.warning("      ✅ Has coordinator")
+
+                # Check what attributes the coordinator has
+                if hasattr(coordinator, "_tile_auth_cache"):
+                    _LOGGER.warning("      ✅ Has _tile_auth_cache with %d items", len(coordinator._tile_auth_cache))
+                    for tile_id, auth_key in coordinator._tile_auth_cache.items():
+                        try:
+                            # Auth key might already be bytes or could be a hex string
+                            if isinstance(auth_key, bytes):
+                                auth_keys[tile_id] = auth_key
+                                _LOGGER.warning("         🔑 Found auth key for Tile: %s (already bytes, %d bytes)", tile_id, len(auth_key))
+                            else:
+                                auth_keys[tile_id] = bytes.fromhex(auth_key)
+                                _LOGGER.warning("         🔑 Found auth key for Tile: %s (converted from hex)", tile_id)
+                        except Exception as e:
+                            _LOGGER.warning("         ❌ Failed to parse auth key for %s: %s", tile_id, e)
+                else:
+                    _LOGGER.warning("      ❌ No _tile_auth_cache attribute")
+                    # List all attributes that start with _tile
+                    tile_attrs = [attr for attr in dir(coordinator) if attr.startswith('_tile')]
+                    _LOGGER.warning("      Available _tile* attributes: %s", tile_attrs)
+
+            if not auth_keys:
+                _LOGGER.error("❌ No Tile auth keys found - make sure Tiles are configured")
+                return {"devices_tested": 0, "tiles_found": 0, "error": "No auth keys"}
+
+            # Run the brute-force test
+            results = await diagnose_ring_all_ble_devices(hass, auth_keys)
+
+            tiles_found = sum(1 for r in results.values() if "SUCCESS" in r)
+
+            result = {
+                "devices_tested": len(results),
+                "tiles_found": tiles_found,
+                "results": [
+                    {"mac": mac, "result": res}
+                    for mac, res in results.items()
+                ],
+            }
+
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+            _LOGGER.warning("✅ Service %s completed: Found %d Tile(s) out of %d devices",
+                          SERVICE_DIAGNOSE_RING_ALL_BLE, tiles_found, len(results))
+            _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+            return result
+
+        except Exception as err:
+            _LOGGER.error("❌ Ring-all diagnostic failed: %s", err, exc_info=True)
+            return {"devices_tested": 0, "tiles_found": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, SERVICE_DIAGNOSE_RING_ALL_BLE, diagnose_ring_all_ble)
+
+    async def diagnose_raw_scan(call: ServiceCall) -> dict:
+        """Direct BLE scan bypassing HA's Bluetooth backend to see raw advertisement data."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔬 Service diagnose_raw_ble_scan called - direct BLE scan")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_raw_ble_scan
+
+            scan_timeout = call.data.get("scan_timeout", 30.0)
+            results = await diagnose_raw_ble_scan(scan_timeout=scan_timeout)
+
+            return results
+
+        except Exception as err:
+            _LOGGER.error("❌ Raw BLE scan failed: %s", err, exc_info=True)
+            return {"total_devices": 0, "tiles_found": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, "diagnose_raw_ble_scan", diagnose_raw_scan)
+
+    async def diagnose_ring_by_mac(call: ServiceCall) -> dict:
+        """Test ringing a specific Tile by MAC address."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("🔔 Service diagnose_ring_tile_by_mac called")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import diagnose_ring_tile_by_mac
+
+            mac_address = call.data.get("mac_address")
+            tile_id = call.data.get("tile_id", "unknown")
+
+            if not mac_address:
+                _LOGGER.error("❌ mac_address is required")
+                return {"success": False, "error": "mac_address required"}
+
+            # Get auth key for this tile_id from coordinator
+            auth_key = None
+            entries = hass.config_entries.async_entries(DOMAIN)
+            for entry in entries:
+                coordinator = entry.runtime_data.coordinator
+                if hasattr(coordinator, "_tile_auth_cache"):
+                    if tile_id in coordinator._tile_auth_cache:
+                        auth_key = coordinator._tile_auth_cache[tile_id]
+                        if not isinstance(auth_key, bytes):
+                            auth_key = bytes.fromhex(auth_key)
+                        break
+
+            if not auth_key:
+                _LOGGER.error("❌ No auth key found for Tile ID: %s", tile_id)
+                return {"success": False, "error": f"No auth key for {tile_id}"}
+
+            # Get scan timeout (default 120s, max 600s for 10 minutes)
+            scan_timeout = min(call.data.get("scan_timeout", 120.0), 600.0)
+
+            results = await diagnose_ring_tile_by_mac(mac_address, tile_id, auth_key, scan_timeout)
+
+            # Send notification with result
+            if results.get("success"):
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "message": (
+                            f"✅ SUCCESS! Tile at {mac_address} should be ringing!\n\n"
+                            f"Connected: {results.get('connected')}\n"
+                            f"Authenticated: {results.get('authenticated')}\n"
+                            f"Ring command sent: {results.get('rang')}"
+                        ),
+                        "title": "BLE Ring Test: SUCCESS",
+                        "notification_id": "life360_ble_ring_test",
+                    },
+                )
+            else:
+                # Build detailed failure message
+                details = [
+                    f"❌ FAILED: {results.get('error', 'Unknown error')}",
+                    "",
+                    f"Target MAC: {mac_address}",
+                    f"Tile ID: {tile_id}",
+                    f"Scanned for MAC: {results.get('scanned_for_mac', 'N/A')}",
+                    "",
+                    f"Device found in scan: {results.get('device_found_in_scan', False)}",
+                    f"Connected: {results.get('connected', False)}",
+                    f"Authenticated: {results.get('authenticated', False)}",
+                ]
+
+                # Add more context based on what failed
+                if not results.get('device_found_in_scan', False):
+                    details.append("")
+                    details.append("💡 Device not found during scan!")
+                    details.append("   - Device may be sleeping")
+                    details.append("   - Press button on device and retry")
+                    details.append("   - Check if device is in range")
+
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "message": "\n".join(details),
+                        "title": "BLE Ring Test: FAILED",
+                        "notification_id": "life360_ble_ring_test",
+                    },
+                )
+
+            return results
+
+        except Exception as err:
+            _LOGGER.error("❌ Ring test failed: %s", err, exc_info=True)
+            error_msg = str(err)
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "message": (
+                        f"❌ EXCEPTION: {error_msg}\n\n"
+                        f"MAC: {mac_address}\n"
+                        f"Tile ID: {tile_id}"
+                    ),
+                    "title": "BLE Ring Test: EXCEPTION",
+                    "notification_id": "life360_ble_ring_test",
+                },
+            )
+            return {"success": False, "error": error_msg}
+
+    hass.services.async_register(DOMAIN, "diagnose_ring_tile_by_mac", diagnose_ring_by_mac)
+
+    async def list_tiles(call: ServiceCall) -> dict:
+        """List all cached Tile devices with their IDs, MACs, and auth keys."""
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("📋 Service diagnose_list_tiles called")
+        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+        try:
+            from .tile_ble import TileBleClient
+
+            # Get the first coordinator with Tile data
+            entries = hass.config_entries.async_entries(DOMAIN)
+            _LOGGER.warning("🔍 Found %d config entries", len(entries))
+
+            for entry in entries:
+                if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                    _LOGGER.warning("  ⚠️ Entry %s has no runtime_data", entry.entry_id)
+                    continue
+
+                coordinator = entry.runtime_data.coordinator
+                _LOGGER.warning("  ✅ Entry %s has coordinator", entry.entry_id)
+
+                # Check what caches exist
+                has_mac_cache = hasattr(coordinator, "_tile_mac_cache")
+                has_auth_cache = hasattr(coordinator, "_tile_auth_cache")
+                _LOGGER.warning("     MAC cache exists: %s (count: %d)", has_mac_cache,
+                              len(coordinator._tile_mac_cache) if has_mac_cache else 0)
+                _LOGGER.warning("     Auth cache exists: %s (count: %d)", has_auth_cache,
+                              len(coordinator._tile_auth_cache) if has_auth_cache else 0)
+
+                # Try to build results from auth cache if MAC cache is empty
+                results = {"tiles": [], "count": 0}
+
+                if has_auth_cache and coordinator._tile_auth_cache:
+                    _LOGGER.warning("  📋 Building list from auth cache")
+                    for tile_id, auth_key in coordinator._tile_auth_cache.items():
+                        # Derive MAC from Tile ID
+                        mac_address = TileBleClient._tile_id_to_mac(tile_id)
+
+                        # Try to find device_id from MAC cache
+                        device_id = "Unknown"
+                        if has_mac_cache:
+                            for dev_id, mac in coordinator._tile_mac_cache.items():
+                                if mac.upper() == mac_address.upper():
+                                    device_id = dev_id
+                                    break
+
+                        tile_info = {
+                            "device_id": device_id,
+                            "mac_address": mac_address,
+                            "tile_id": tile_id,
+                            "has_auth_key": True,
+                        }
+                        results["tiles"].append(tile_info)
+
+                        _LOGGER.warning(
+                            "    🔹 Tile ID: %s\n"
+                            "       MAC: %s\n"
+                            "       Device ID: %s",
+                            tile_id, mac_address, device_id
+                        )
+
+                    results["count"] = len(results["tiles"])
+
+                    # Send notification with results
+                    message_lines = [f"Found {results['count']} Tile device(s):\n\n"]
+                    for tile in results["tiles"]:
+                        message_lines.append(
+                            f"📱 Tile ID: {tile['tile_id']}\n"
+                            f"   MAC: {tile['mac_address']}\n"
+                            f"   Device ID: {tile['device_id']}\n\n"
+                        )
+
+                    await hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "message": "".join(message_lines),
+                            "title": "Tile Devices List",
+                            "notification_id": "life360_tile_list",
+                        },
+                    )
+
+                    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+                    _LOGGER.warning("✅ Found %d Tile(s)", results["count"])
+                    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+
+                    return results
+
+            _LOGGER.warning("❌ No coordinator with Tile data found")
+            return {"tiles": [], "count": 0, "error": "No Tile data found"}
+
+        except Exception as err:
+            _LOGGER.error("❌ List tiles failed: %s", err, exc_info=True)
+            return {"tiles": [], "count": 0, "error": str(err)}
+
+    hass.services.async_register(DOMAIN, "diagnose_list_tiles", list_tiles)
 
     def _get_device_info_from_entity(entity_id: str) -> tuple[str | None, str | None, str | None]:
         """Extract device_id, circle_id, and provider from entity_id.

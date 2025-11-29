@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2025-01-XX
 
 ### Added
 
@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Jiobit pet GPS tracker support** - Track pet/child GPS devices integrated with Life360
 - **Device Issues sensor** - Monitor connectivity, battery, and signal issues for Tile/Jiobit devices
 - **Jiobit Buzz service** (`life360.buzz_jiobit`) - Send buzz command to locate pets
+
+#### Tile BLE Direct Ringing 🔔 NEW!
+- **Direct Bluetooth ringing** - Ring Tile devices via BLE without cloud API delays (<1 second response)
+- **Complete TOA protocol** - Full implementation of Tile Over Air (TOA) protocol reverse-engineered from Android app
+- **20-method authentication** - Brute-force authentication with automatic method discovery
+- **HMAC-SHA256 security** - Encrypted channel with proper counter synchronization
+- **Volume & duration control** - Configurable ring volume (low/medium/high) and duration (1-300 seconds)
+- **Automatic fallback** - Falls back to cloud API if Tile is out of BLE range
+- **Full feature support** - Includes authentication, channel establishment, diagnostics, connection updates
 
 #### Driving & Trips
 - **Driving Statistics sensors** - Weekly metrics per member:

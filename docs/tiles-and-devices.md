@@ -28,6 +28,14 @@ All Tile models are supported:
 3. This creates a crowdsourced network for finding lost items
 4. Location updates depend on how recently a phone has been near the Tile
 
+**Direct BLE Ringing (NEW in 2025):**
+- This integration can ring Tiles **directly via Bluetooth** when in range
+- No cloud API delays - rings in <1 second
+- Uses the complete Tile Over Air (TOA) protocol
+- Requires your Home Assistant host to have Bluetooth hardware
+- Automatically falls back to cloud API if Tile is out of BLE range
+- See [Tile BLE Technical Documentation](tile-ble-technical.md) for protocol details
+
 ### Jiobit Pet/Child GPS
 
 Jiobit devices are cellular GPS trackers that provide:
@@ -119,6 +127,49 @@ Each device tracker entity includes:
 | `<zone_name>` | Device is in a named zone |
 | `unknown` | No location data available |
 
+## Ringing Tiles
+
+### Using the life360.ring_device Service
+
+Ring your Tile devices to help locate them:
+
+```yaml
+service: life360.ring_device
+data:
+  entity_id: device_tracker.tile_keys
+  duration: 30  # seconds (1-300)
+  strength: 2   # 1=low, 2=medium, 3=high
+```
+
+**How it works:**
+1. Integration scans for the Tile via Bluetooth
+2. Connects to the Tile (if in BLE range)
+3. Authenticates using the Tile Over Air (TOA) protocol
+4. Sends ring command with specified volume and duration
+5. Falls back to cloud API if BLE connection fails
+
+**Requirements:**
+- Home Assistant host must have Bluetooth hardware
+- Tile must be within BLE range (~30 meters)
+- Tile must have battery power
+
+### Creating a Ring Button
+
+Add a button to your dashboard to ring a Tile:
+
+```yaml
+type: button
+name: Ring Keys
+icon: mdi:key-ring
+tap_action:
+  action: call-service
+  service: life360.ring_device
+  service_data:
+    entity_id: device_tracker.tile_keys
+    duration: 30
+    strength: 3
+```
+
 ## Automation Examples
 
 ### Alert When Tile Battery is Low
@@ -136,6 +187,31 @@ automation:
         data:
           title: "Tile Battery Low"
           message: "Your keys Tile battery is at {{ state_attr('device_tracker.tile_keys', 'battery_level') }}%"
+```
+
+### Ring Tile When Leaving Home Without It
+
+```yaml
+automation:
+  - alias: "Ring Keys if Forgotten"
+    trigger:
+      - platform: state
+        entity_id: person.you
+        from: "home"
+    condition:
+      - condition: state
+        entity_id: device_tracker.tile_keys
+        state: "home"
+    action:
+      - service: life360.ring_device
+        data:
+          entity_id: device_tracker.tile_keys
+          duration: 10
+          strength: 3
+      - service: notify.mobile_app
+        data:
+          title: "Don't Forget Your Keys!"
+          message: "Your keys are still at home"
 ```
 
 ### Track Pet Leaving Home

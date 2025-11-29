@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
@@ -38,6 +39,11 @@ MEP_COMMAND_CHAR_UUID = "9d410018-35d6-f4dd-ba60-e7bd8dc491c0"
 MEP_RESPONSE_CHAR_UUID = "9d410019-35d6-f4dd-ba60-e7bd8dc491c0"
 TILE_ID_CHAR_UUID = "9d410007-35d6-f4dd-ba60-e7bd8dc491c0"
 
+# MEP (Message Exchange Protocol) Format:
+# Connectionless commands: 0x00 + 4-byte-random-connection-id + command + payload
+# Channel commands: channel_byte + command + payload + HMAC
+# The 4-byte connection ID is randomly generated per session (see __init__)
+
 
 class TileVolume(IntEnum):
     """Tile ring volume levels."""
@@ -60,7 +66,7 @@ class ToaCommand(IntEnum):
     TCU = 11
     TFC = 12
     TKA = 13
-    TRM = 14
+    TRM = 24  # 0x18 - Tile Ring Module (the CORRECT ring command!)
     ADVINT = 15
 
 
@@ -69,6 +75,13 @@ class SongType(IntEnum):
     STOP = 0
     FIND = 1
     RING = 2
+
+
+class TrmType(IntEnum):
+    """TRM (Tile Ring Module) transaction types."""
+    START_RING = 1  # Start ringing
+    STOP_RING = 2   # Stop ringing
+    READ = 3        # Read ring status
 
 
 @dataclass
@@ -91,6 +104,8 @@ class TileBleClient:
         tile_id: str,
         auth_key: bytes,
         timeout: float = 10.0,
+        on_auth_success: Any | None = None,
+        known_auth_method: int | None = None,
     ) -> None:
         """Initialize Tile BLE client.
 
@@ -98,6 +113,8 @@ class TileBleClient:
             tile_id: The Tile device ID (MAC address or UUID)
             auth_key: 16-byte authentication key for this Tile
             timeout: Connection timeout in seconds
+            on_auth_success: Optional callback(tile_id, method_number) called when auth succeeds
+            known_auth_method: Optional previously successful auth method number (1-20)
         """
         if not BLEAK_AVAILABLE:
             raise RuntimeError("bleak library not available")
@@ -105,13 +122,24 @@ class TileBleClient:
         self.tile_id = tile_id
         self.auth_key = auth_key
         self.timeout = timeout
+        self.on_auth_success = on_auth_success
+        self.known_auth_method = known_auth_method
         self._client: BleakClient | None = None
         self._device: BLEDevice | None = None
         self._response_event = asyncio.Event()
         self._response_data: bytes = b""
+        self._response_queue: asyncio.Queue = asyncio.Queue()
         self._authenticated = False
         self._rand_a: bytes = b""
+        self._rand_t: bytes = b""
         self._channel_key: bytes = b""
+        self._channel_byte: int = 0
+        self._channel_data: bytes = b""
+        # Generate random 4-byte connection ID per session (matches Android TileCryptoManager.Kz())
+        # This is used in connectionless MEP header (0x00 + connection_id) and in HMAC calculation
+        self._connection_id: bytes = secrets.token_bytes(4)
+        self._tx_counter: int = 0  # Counter for sent commands (cuQ in Android)
+        self._rx_counter: int = 0  # Counter for received responses (cuR in Android)
 
     def _tile_id_to_mac(self, tile_id: str) -> str:
         """Convert Tile ID to expected BLE MAC address.
@@ -178,14 +206,41 @@ class TileBleClient:
 
             # Log ALL devices in diagnostic mode
             _LOGGER.warning(
-                "🔧 BLE device detected: name=%s, address=%s, rssi=%s",
+                "🔧 BLE device detected: name=%s, address=%s, rssi=%s, service_uuids=%s",
                 device.name or "N/A",
                 device.address,
-                advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A'
+                advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A',
+                list(advertisement_data.service_uuids) if advertisement_data.service_uuids else "None"
             )
 
-            # Check by derived MAC address (primary method)
+            # Normalize this device's MAC for comparison
             addr_normalized = device.address.lower().replace(":", "").replace("-", "")
+
+            # PRIMARY: Check if device advertises Tile service UUID
+            if advertisement_data.service_uuids and TILE_SERVICE_UUID in advertisement_data.service_uuids:
+                # Check if this is OUR target Tile (exact MAC match)
+                if addr_normalized == expected_mac_lower:
+                    _LOGGER.warning("✅✅✅ FOUND TARGET TILE BY EXACT MAC MATCH at %s!", device.address)
+                    _LOGGER.debug("   Service UUID: %s", TILE_SERVICE_UUID)
+                    _LOGGER.debug("   MAC: %s", device.address)
+                    _LOGGER.debug("   Expected MAC: %s", expected_mac)
+                    _LOGGER.debug("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+                    found_device = device
+                    return  # Stop scanning - we found our target!
+                else:
+                    # Found A Tile, but not OUR Tile - log it but keep scanning
+                    _LOGGER.warning("✅ FOUND TILE BY SERVICE UUID at %s (but not our target)", device.address)
+                    _LOGGER.debug("   Service UUID: %s", TILE_SERVICE_UUID)
+                    _LOGGER.debug("   MAC: %s (expected: %s)", device.address, expected_mac)
+                    _LOGGER.debug("   RSSI: %s", advertisement_data.rssi if hasattr(advertisement_data, 'rssi') else 'N/A')
+
+                    # If we haven't found any device yet, use this as a fallback
+                    if found_device is None:
+                        _LOGGER.debug("   → Using as fallback candidate")
+                        found_device = device
+                    return
+
+            # FALLBACK: Check by derived MAC address (less reliable due to MAC randomization)
             if addr_normalized == expected_mac_lower:
                 _LOGGER.info("✅ MATCH: Found Tile by derived MAC address!")
                 _LOGGER.info("   Tile ID: %s", self.tile_id)
@@ -198,39 +253,64 @@ class TileBleClient:
             # Fallback: Check if first 6 bytes of tile_id are in the MAC address
             if len(tile_id_lower) >= 12 and tile_id_lower[:12] in addr_normalized:
                 _LOGGER.info("✅ Found matching Tile by partial ID in address: %s", device.address)
-                found_device = device
+                if found_device is None:  # Only use if we haven't found anything better
+                    found_device = device
                 return
 
             # Fallback: Check by name if it contains tile ID
             if device.name and tile_id_lower[:8] in device.name.lower():
                 _LOGGER.info("✅ Found matching Tile by name: %s at %s", device.name, device.address)
-                found_device = device
+                if found_device is None:  # Only use if we haven't found anything better
+                    found_device = device
 
         try:
-            # DIAGNOSTIC: Temporarily scan ALL BLE devices (no service UUID filter)
-            _LOGGER.warning("🔧 DIAGNOSTIC MODE: Scanning ALL BLE devices (no filter)")
+            # DIAGNOSTIC: Persistent scan - stop as soon as target found
+            _LOGGER.debug(" DIAGNOSTIC MODE: Persistent scan (up to %.0f seconds)", scan_timeout)
+            _LOGGER.debug(" Will connect immediately when Tile is detected")
+
             scanner = BleakScanner(
                 detection_callback=detection_callback,
                 # service_uuids=[TILE_SERVICE_UUID],  # Temporarily disabled for diagnostics
             )
 
             await scanner.start()
-            await asyncio.sleep(scan_timeout)
+
+            # Persistent scan: check every 0.5 seconds if we found the device
+            start_time = asyncio.get_event_loop().time()
+            check_interval = 0.5  # Check twice per second
+
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                # If we found the target device, stop immediately!
+                if found_device:
+                    _LOGGER.warning("✅ Target found at %.1fs - stopping scan early!", elapsed)
+                    break
+
+                # If we've exceeded the timeout, give up
+                if elapsed >= scan_timeout:
+                    _LOGGER.debug(" Scan timeout reached after %.0fs", scan_timeout)
+                    break
+
+                # Wait a bit before checking again
+                await asyncio.sleep(check_interval)
+
             await scanner.stop()
 
-            _LOGGER.warning("🔧 DIAGNOSTIC: Scan complete - detected %d BLE devices total", len(devices_seen))
+            _LOGGER.debug(" DIAGNOSTIC: Scan complete - detected %d BLE devices total", len(devices_seen))
             if devices_seen:
-                _LOGGER.warning("🔧 Devices found: %s", ", ".join(devices_seen))
+                _LOGGER.debug(" Devices found: %s", ", ".join(devices_seen))
 
             if found_device:
                 _LOGGER.info("✅ Successfully located Tile device!")
                 self._device = found_device
                 return found_device
 
-            _LOGGER.warning("❌ Tile %s not found in BLE range", self.tile_id)
-            _LOGGER.warning("   Expected MAC: %s", expected_mac)
-            _LOGGER.warning("   If the Tile is nearby, it may be out of range or sleeping")
-            _LOGGER.error("🔧 DIAGNOSTIC: No devices found at all - BLE adapter may not be working!")
+            _LOGGER.warning("❌ Tile %s not found in BLE range after %.0fs", self.tile_id, scan_timeout)
+            _LOGGER.debug("   Expected MAC: %s", expected_mac)
+            _LOGGER.debug("   If the Tile is nearby, it may be out of range or sleeping")
+            if not devices_seen:
+                _LOGGER.error("🔧 DIAGNOSTIC: No devices found at all - BLE adapter may not be working!")
             return None
 
         except Exception as err:
@@ -256,13 +336,16 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔌 Connecting directly to Tile at %s (30s timeout)...", self._device.address)
+            _LOGGER.info("🔌 Connecting to Tile at %s using bleak-retry-connector...", self._device.address)
 
-            # Use direct BleakClient - simpler and works without HA Bluetooth backend complexity
-            self._client = BleakClient(self._device, timeout=30.0)
-
-            # Connect with asyncio timeout for reliability
-            await asyncio.wait_for(self._client.connect(), timeout=30.0)
+            # Use bleak-retry-connector for reliable connections
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._device,
+                self._device.address,
+                disconnected_callback=self._handle_disconnect,
+                timeout=30.0,
+            )
 
             if not self._client.is_connected:
                 raise BleakError("Connection established but client reports not connected")
@@ -289,6 +372,11 @@ class TileBleClient:
             self._client = None
             return False
 
+    def _handle_disconnect(self, client: BleakClient) -> None:
+        """Handle disconnection from Tile."""
+        _LOGGER.warning("⚠️ Tile disconnected")
+        self._authenticated = False
+
     async def disconnect(self) -> None:
         """Disconnect from the Tile device."""
         if self._client and self._client.is_connected:
@@ -301,9 +389,44 @@ class TileBleClient:
 
     def _handle_response(self, sender: Any, data: bytes) -> None:
         """Handle response from Tile."""
-        _LOGGER.debug("Tile response: %s", data.hex())
+        # ALWAYS log raw data first, even before any processing
+        import sys
+        sys.stderr.write(f"\n🔴 RAW NOTIFICATION: {data.hex()} (len={len(data)})\n")
+        sys.stderr.flush()
+
+        _LOGGER.debug(" === TILE RESPONSE RECEIVED ===")
+        _LOGGER.debug("   From: %s", sender)
+        _LOGGER.debug("   Data: %s", data.hex())
+        _LOGGER.debug("   Length: %d bytes", len(data))
+
+        # Parse response type
+        if len(data) > 0:
+            if data[0] == 0x00:
+                _LOGGER.debug("   Type: MEP Connectionless (auth phase)")
+            elif data[0] == self._channel_byte:
+                _LOGGER.debug("   Type: Channel-based (channel byte: 0x%02x)", self._channel_byte)
+                if len(data) > 1:
+                    _LOGGER.debug("   Response cmd: 0x%02x", data[1])
+            else:
+                _LOGGER.debug("   Type: Unknown (first byte: 0x%02x)", data[0])
+
         self._response_data = data
         self._response_event.set()
+
+        # Also put in queue for channel operations
+        try:
+            self._response_queue.put_nowait(data)
+            _LOGGER.debug("   ✅ Response added to queue (queue size: %d)", self._response_queue.qsize())
+        except asyncio.QueueFull:
+            _LOGGER.debug("   ⚠️ Response queue full, discarding oldest response")
+            try:
+                self._response_queue.get_nowait()  # Remove oldest
+                self._response_queue.put_nowait(data)  # Add new
+                _LOGGER.debug("   ✅ Response added after clearing oldest")
+            except Exception as e:
+                _LOGGER.error("   ❌ Failed to add response to queue: %s", e)
+
+        _LOGGER.debug(" === END RESPONSE ===\n")
 
     async def _send_command(self, data: bytes) -> bytes:
         """Send command and wait for response.
@@ -320,20 +443,34 @@ class TileBleClient:
         self._response_event.clear()
         self._response_data = b""
 
-        _LOGGER.debug("Sending to Tile: %s", data.hex())
-        await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, data)
+        _LOGGER.debug(" Sending to Tile: %s (length=%d)", data.hex(), len(data))
+        _LOGGER.debug(" Writing to characteristic: %s", MEP_COMMAND_CHAR_UUID)
+        try:
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, data)
+            _LOGGER.debug(" Write completed successfully")
+        except Exception as e:
+            _LOGGER.error("❌ Failed to write to characteristic: %s", e, exc_info=True)
+            return b""
 
         # Wait for response
+        _LOGGER.debug(" Waiting for response (timeout=5.0s)...")
         try:
             await asyncio.wait_for(self._response_event.wait(), timeout=5.0)
+            _LOGGER.debug(" Response received!")
         except asyncio.TimeoutError:
-            _LOGGER.warning("Timeout waiting for Tile response")
+            _LOGGER.debug(" Timeout waiting for Tile response after 5 seconds")
             return b""
 
         return self._response_data
 
     async def authenticate(self) -> bool:
-        """Perform authentication handshake with Tile.
+        """Perform TDI-based authentication handshake with Tile.
+
+        Based on node-tile protocol implementation:
+        1. Send TDI request to get Tile information
+        2. Send randA (14 bytes)
+        3. Receive randT and sresT from Tile
+        4. Validate and complete authentication
 
         Returns:
             True if authentication succeeded
@@ -343,58 +480,631 @@ class TileBleClient:
             return False
 
         try:
-            _LOGGER.info("🔐 Starting Tile authentication handshake...")
+            _LOGGER.debug(" Starting TDI-based Tile authentication handshake...")
+            _LOGGER.debug(" Using MEP (Message Exchange Protocol) format")
 
-            # Generate random value for authentication
-            self._rand_a = os.urandom(8)
-            _LOGGER.debug("Generated randA: %s", self._rand_a.hex())
+            # MEP connectionless packet format: [0x00, connection_id(4 bytes), command, payload]
+            # Connection ID is randomly generated per session (matches Android TileCryptoManager.Kz())
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            _LOGGER.debug(" Session connection ID: %s", self._connection_id.hex())
 
-            # Step 1: Send AUTH command with randA
-            # Format: [TOA_AUTH, randA (8 bytes)]
-            auth_cmd = bytes([ToaCommand.AUTH]) + self._rand_a
-            _LOGGER.debug("Step 1: Sending AUTH command with randA")
-            response = await self._send_command(auth_cmd)
+            # Step 1: Send ALL TDI (Tile Data Information) requests
+            # BLE capture shows Android sends 4 TDI requests before randA!
+            # This might be REQUIRED for Tile to accept channel establishment
+            _LOGGER.debug(" Step 1: Sending TDI requests (matching BLE capture sequence)...")
 
-            if len(response) < 17:
-                _LOGGER.error("❌ Invalid auth response length: %d (expected >= 17)", len(response))
+            # TDI request 1: TILE_ID (Frame 273 in capture)
+            tdi_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x01])
+            tdi_response = await self._send_command(tdi_cmd)
+            if tdi_response and tdi_response.startswith(MEP_CONNECTIONLESS):
+                tdi_data = tdi_response[5:]
+                _LOGGER.debug("✅ TDI TILE_ID response: %s", tdi_data.hex())
+
+            # TDI request 2: FIRMWARE_VERSION (Frame 276 in capture)
+            tdi_fw_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x03])
+            tdi_fw_response = await self._send_command(tdi_fw_cmd)
+            if tdi_fw_response and tdi_fw_response.startswith(MEP_CONNECTIONLESS):
+                fw_data = tdi_fw_response[5:]
+                _LOGGER.debug("✅ TDI FIRMWARE response: %s", fw_data.hex())
+                # Try to decode ASCII firmware version
+                try:
+                    if len(fw_data) > 2:
+                        fw_str = fw_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.debug("   Firmware: %s", fw_str)
+                except:
+                    pass
+
+            # TDI request 3: MODEL_NUMBER (Frame 277 in capture)
+            tdi_model_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x04])
+            tdi_model_response = await self._send_command(tdi_model_cmd)
+            if tdi_model_response and tdi_model_response.startswith(MEP_CONNECTIONLESS):
+                model_data = tdi_model_response[5:]
+                _LOGGER.debug("✅ TDI MODEL response: %s", model_data.hex())
+                try:
+                    if len(model_data) > 2:
+                        model_str = model_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.debug("   Model: %s", model_str)
+                except:
+                    pass
+
+            # TDI request 4: HARDWARE_VERSION (Frame 278 in capture)
+            tdi_hw_cmd = MEP_CONNECTIONLESS + bytes([0x13, 0x05])
+            tdi_hw_response = await self._send_command(tdi_hw_cmd)
+            if tdi_hw_response and tdi_hw_response.startswith(MEP_CONNECTIONLESS):
+                hw_data = tdi_hw_response[5:]
+                _LOGGER.debug("✅ TDI HARDWARE response: %s", hw_data.hex())
+                try:
+                    if len(hw_data) > 2:
+                        hw_str = hw_data[2:].decode('ascii', errors='ignore')
+                        _LOGGER.debug("   Hardware: %s", hw_str)
+                except:
+                    pass
+
+            _LOGGER.debug("✅ All TDI requests completed (matching BLE capture)")
+
+            # Step 2: Generate and send randA (14 bytes for MEP-enabled Tiles)
+            self._rand_a = os.urandom(14)
+            _LOGGER.debug(" Step 2: Sending randA (14 bytes)...")
+            _LOGGER.debug(" Generated randA: %s", self._rand_a.hex())
+
+            # Command: 0x14 (20 decimal), Payload: randA (14 bytes)
+            randa_cmd = MEP_CONNECTIONLESS + bytes([0x14]) + self._rand_a
+            _LOGGER.debug(" randA command: %s (length=%d)", randa_cmd.hex(), len(randa_cmd))
+
+            auth_response = await self._send_command(randa_cmd)
+            _LOGGER.debug(" Auth response: %s (length=%d)", auth_response.hex() if auth_response else "empty", len(auth_response))
+
+            if not auth_response or len(auth_response) < 5:
+                _LOGGER.error("❌ Invalid auth response (too short or empty)")
                 return False
 
-            # Response format: [cmd, randT (8 bytes), sresT (8 bytes)]
-            rand_t = response[1:9]
-            sres_t = response[9:17]
-            _LOGGER.debug("Received randT: %s, sresT: %s", rand_t.hex(), sres_t.hex())
+            # Parse auth response - should contain randT and sresT
+            # Skip MEP header if present
+            if auth_response.startswith(MEP_CONNECTIONLESS):
+                auth_data = auth_response[5:]
+            else:
+                auth_data = auth_response
 
-            # Step 2: Verify Tile's response
-            _LOGGER.debug("Step 2: Verifying Tile's signature")
-            expected_sres_t = self._compute_sres(rand_t, self._rand_a, self.auth_key)
-            if sres_t != expected_sres_t:
-                _LOGGER.error("❌ Tile authentication failed - invalid sresT (signature mismatch)")
-                _LOGGER.debug("Expected: %s, Got: %s", expected_sres_t.hex(), sres_t.hex())
+            _LOGGER.debug(" Auth data (after MEP header): %s", auth_data.hex())
+
+            # Expected format: [response_prefix, randT, sresT, ...]
+            # Based on Android app decompilation (AuthTransaction.java):
+            # - Old TOA format: 1 prefix + 10 bytes randT + 4 bytes sresT = 15 bytes
+            # - Even older format: 1 prefix + 8 bytes randT + 8 bytes sresT = 17 bytes
+            response_prefix = auth_data[0]
+            _LOGGER.debug(" Response prefix: 0x%02x (command %d)", response_prefix, response_prefix)
+
+            if len(auth_data) == 15:  # TOA format: 1 prefix + 10 randT + 4 sresT
+                _LOGGER.debug(" TOA format detected (10-byte randT, 4-byte sresT)")
+                rand_t = auth_data[1:11]   # 10 bytes randT
+                sres_t = auth_data[11:15]  # 4 bytes sresT
+            elif len(auth_data) >= 17:  # Older format: 1 prefix + 8 randT + 8 sresT
+                _LOGGER.debug(" Older format detected (8-byte randT/sresT)")
+                rand_t = auth_data[1:9]
+                sres_t = auth_data[9:17]
+            else:
+                _LOGGER.error("❌ Auth response unexpected length: %d bytes", len(auth_data))
+                _LOGGER.debug(" Received auth_data breakdown:")
+                for i, byte in enumerate(auth_data):
+                    _LOGGER.debug("   [%d]: 0x%02x", i, byte)
+                return False
+            _LOGGER.debug(" Received randT: %s (%d bytes)", rand_t.hex(), len(rand_t))
+            _LOGGER.debug(" Received sresT: %s (%d bytes)", sres_t.hex(), len(sres_t))
+
+            # Step 3: Verify Tile's signature
+            _LOGGER.debug(" Step 3: Verifying Tile's signature...")
+
+            # Try different HMAC calculations to find the correct one
+            _LOGGER.debug(" Trying different HMAC combinations (based on node-tile implementation)...")
+            _LOGGER.debug(" Auth key: %s (length=%d)", self.auth_key.hex(), len(self.auth_key))
+            _LOGGER.debug(" TDI response data: %s", tdi_data.hex() if tdi_data else "N/A")
+            _LOGGER.debug(" Response prefix: 0x%02x", response_prefix)
+
+            # Extract potential channelData and channelPrefix from TDI response
+            # TDI response format might be: [cmd, channel_prefix, channel_data...]
+            channel_prefix = None
+            channel_data = None
+            if len(tdi_data) >= 3:
+                # TDI data: [0x14, 0x01, 0x3f] - might contain channel info
+                channel_prefix = tdi_data[1:2]  # 0x01
+                channel_data = tdi_data[2:3]    # 0x3f
+                _LOGGER.debug(" Extracted channel_prefix: %s", channel_prefix.hex())
+                _LOGGER.debug(" Extracted channel_data: %s", channel_data.hex())
+
+            # Android CryptoUtils.b() method with CORRECT 16-byte padding per value
+            # CRITICAL: Android uses BytesUtils.e() to pad EACH value to 16 bytes BEFORE concatenating!
+            # See TileBleGattCallback.java line 647-649:
+            #   this.bcT = BytesUtils.e(authTransaction.KN(), 16);  // Pad randT to 16 bytes
+            #   this.bcS = BytesUtils.e(this.bcS, 16);              // Pad randA to 16 bytes
+            # Then CryptoUtils.b() concatenates them: 16 + 16 = 32 bytes exactly
+
+            # Pad randA to 16 bytes (Java Arrays.copyOf behavior)
+            rand_a_16 = self._rand_a + b'\x00' * (16 - len(self._rand_a))
+            # Pad randT to 16 bytes
+            rand_t_16 = rand_t + b'\x00' * (16 - len(rand_t))
+            # Concatenate: 16 + 16 = 32 bytes
+            message_32 = rand_a_16 + rand_t_16
+
+            # Calculate HMAC with the correctly padded 32-byte message
+            full_hmac_1 = hmac.new(self.auth_key, message_32, hashlib.sha256).digest()
+            expected_1 = full_hmac_1[4:8]  # Extract bytes 4-7 (4 bytes)
+            _LOGGER.debug(" Try 1 (ANDROID CORRECT: randA→16 + randT→16 [4:8]): %s", expected_1.hex())
+            _LOGGER.debug("   randA (14→16): %s", rand_a_16.hex())
+            _LOGGER.debug("   randT (10→16): %s", rand_t_16.hex())
+            _LOGGER.debug("   Full HMAC: %s", full_hmac_1.hex())
+
+            _LOGGER.debug(" Tile sent sresT: %s (%d bytes)", sres_t.hex(), len(sres_t))
+
+            # Verify the signature matches
+            # Method 1 is the CORRECT method based on Android app decompilation
+            expected_list = [
+                (expected_1, "ANDROID CORRECT: randA→16 + randT→16, HMAC[4:8]"),
+            ]
+
+            # If we have a known working method, try it first
+            if self.known_auth_method and 1 <= self.known_auth_method <= len(expected_list):
+                expected, desc = expected_list[self.known_auth_method - 1]
+                if expected and sres_t == expected:
+                    _LOGGER.debug("✅ SIGNATURE VERIFIED! Known method %d worked: %s", self.known_auth_method, desc)
+                    _LOGGER.info("✅ Fast auth using cached method!")
+                    # No need to call callback since method is already cached
+                else:
+                    _LOGGER.warning("⚠️ Known method %d failed, trying all methods...", self.known_auth_method)
+                    # Continue to try all methods below
+
+            # Try all methods if known method failed or wasn't provided
+            if not self._authenticated:  # Only try if not already authenticated above
+                for i, (expected, desc) in enumerate(expected_list, 1):
+                    if expected and sres_t == expected:
+                        _LOGGER.debug("✅ SIGNATURE VERIFIED! Method %d: %s", i, desc)
+                        _LOGGER.info("✅ Found working HMAC calculation method!")
+
+                        # Call the callback to store the successful auth method
+                        if self.on_auth_success:
+                            try:
+                                self.on_auth_success(self.tile_id, i)
+                                _LOGGER.info("✅ Stored auth method %d for tile %s", i, self.tile_id[:8])
+                            except Exception as callback_err:
+                                _LOGGER.warning("Failed to store auth method: %s", callback_err)
+
+                        break
+                else:
+                    _LOGGER.error("❌ Tile signature mismatch! None of the 23 methods worked.")
+                    _LOGGER.error("❌ DIAGNOSIS:")
+                    _LOGGER.error("   1. Auth key source: Life360 API (base64 decoded)")
+                    _LOGGER.error("   2. Auth key bytes: %s", self.auth_key.hex())
+                    _LOGGER.error("   3. Auth key length: %d bytes", len(self.auth_key))
+                    _LOGGER.error("   4. Expected sresT: %s", sres_t.hex())
+                    _LOGGER.error("")
+                    _LOGGER.error("💡 NEXT STEPS TO TRY:")
+                    _LOGGER.error("   A. Verify auth key is correct by checking Tile API directly")
+                    _LOGGER.error("   B. Check if Life360's auth key matches Tile's auth key")
+                    _LOGGER.error("   C. Try accessing Tile API directly instead of Life360 API")
+                    _LOGGER.error("   D. Examine if randA size (14 bytes) is correct for your Tile model")
+                    _LOGGER.error("   E. Check if TDI-based auth is correct approach (vs regular AUTH)")
+                    return False
+
+            # Step 4: Authentication complete
+            self._authenticated = True
+            self._rand_t = rand_t
+
+            _LOGGER.debug("✅ TDI-based authentication successful!")
+
+            # Clear response queue from authentication phase to avoid getting old responses
+            cleared = 0
+            while not self._response_queue.empty():
+                try:
+                    self._response_queue.get_nowait()
+                    cleared += 1
+                except:
+                    break
+            if cleared > 0:
+                _LOGGER.debug(" Cleared %d old responses from queue", cleared)
+
+            # Step 5: Open channel to get channel data for encryption key
+            _LOGGER.debug(" Step 4: Opening communication channel...")
+            channel_data = await self._open_channel()
+            if not channel_data:
+                _LOGGER.error("❌ Channel open failed")
                 return False
 
-            _LOGGER.debug("✓ Tile signature verified")
+            # Step 6: Derive channel encryption key from channel data
+            self._channel_key = self._derive_channel_encryption_key(channel_data)
+            _LOGGER.debug("✅ Channel encryption key derived: %s", self._channel_key.hex())
 
-            # Step 3: Send our sresA to prove we have the auth key
-            _LOGGER.debug("Step 3: Sending our signature (sresA)")
-            sres_a = self._compute_sres(self._rand_a, rand_t, self.auth_key)
-            ack_cmd = bytes([ToaCommand.AUTH]) + sres_a
-            response = await self._send_command(ack_cmd)
+            # Step 7: Establish channel (CRITICAL - BLE capture shows this is required!)
+            # Now that we've sent ALL TDI requests, Tile should accept channel establishment
+            _LOGGER.debug(" Step 5: Establishing communication channel...")
+            if not await self._establish_channel():
+                _LOGGER.error("❌ Channel establishment failed")
+                return False
 
-            # Check for success
-            if len(response) > 0 and response[0] == ToaCommand.AUTH:
-                self._authenticated = True
-                # Derive channel key for subsequent commands
-                self._channel_key = self._derive_channel_key(
-                    self._rand_a, rand_t, self.auth_key
-                )
-                _LOGGER.info("✅ Tile authentication successful!")
-                return True
-
-            _LOGGER.error("❌ Tile authentication failed - unexpected response: %s", response.hex() if response else "empty")
-            return False
+            _LOGGER.debug("✅ Channel established - using channel-based commands!")
+            return True
 
         except Exception as err:
             _LOGGER.error("❌ Authentication error: %s", err, exc_info=True)
+            return False
+
+    async def _open_channel(self) -> dict[str, any] | None:
+        """Open communication channel after authentication.
+
+        Sends CHANNEL OPEN command (0x10) with randA as payload.
+        Receives channel_byte and channel_data needed for encryption key derivation.
+
+        Based on BLE capture frame 287-288:
+        - Request: 00f3c7d22d10 + randA (14 bytes)
+        - Response: 00f3c7d22d12 + channel_byte (1 byte) + channel_data (13 bytes)
+
+        Returns:
+            Dict with 'channel_byte' and 'channel_data', or None on failure
+        """
+        try:
+            CHANNEL_OPEN_CMD = 0x10  # 16 decimal
+
+            # Build MEP connectionless command: 0x00 + connection_id + command + randA
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            cmd = MEP_CONNECTIONLESS + bytes([CHANNEL_OPEN_CMD]) + self._rand_a
+
+            _LOGGER.debug(" Channel open command: %s (length=%d)", cmd.hex(), len(cmd))
+            _LOGGER.debug("   Connection ID: %s", self._connection_id.hex())
+            _LOGGER.debug("   Command: 0x%02x", CHANNEL_OPEN_CMD)
+            _LOGGER.debug("   RandA: %s", self._rand_a.hex())
+
+            if not self._client or not self._client.is_connected:
+                raise RuntimeError("Not connected to Tile")
+
+            # Send command and wait for response
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug(" Channel open command sent, waiting for response...")
+
+            response = await asyncio.wait_for(
+                self._response_queue.get(), timeout=5.0
+            )
+
+            _LOGGER.debug(" Channel open response: %s (length=%d)", response.hex(), len(response))
+
+            # Parse response: MEP_ID (5 bytes) + response_byte (1 byte) + channel_byte + channel_data
+            if len(response) < 7:  # Min: 5 (MEP) + 1 (response) + 1 (channel) + 0+ (data)
+                raise ValueError(f"Response too short: {len(response)} bytes")
+
+            # Verify MEP header (5 bytes) and response byte (should be 0x12 for channel open response)
+            MEP_CONNECTIONLESS = bytes([0x00]) + self._connection_id
+            expected_header = MEP_CONNECTIONLESS + bytes([0x12])  # 6 bytes total
+            if response[:6] != expected_header:
+                actual = response[:6].hex()
+                expected = expected_header.hex()
+                raise ValueError(f"Invalid response header: got {actual}, expected {expected}")
+
+            # Extract channel byte and channel data
+            channel_byte = response[6]
+            channel_data = response[7:]
+
+            _LOGGER.debug("✅ Channel opened successfully!")
+            _LOGGER.debug("   Channel byte: 0x%02x", channel_byte)
+            _LOGGER.debug("   Channel data: %s (%d bytes)", channel_data.hex(), len(channel_data))
+
+            return {
+                "channel_byte": channel_byte,
+                "channel_data": channel_data,
+            }
+
+        except asyncio.TimeoutError:
+            _LOGGER.error("❌ Channel open timeout (5 seconds)")
+            return None
+        except Exception as err:
+            _LOGGER.error("❌ Channel open error: %s", err, exc_info=True)
+            return None
+
+    async def _establish_channel(self) -> bool:
+        """Establish communication channel after opening.
+
+        Based on BLE capture: sends command 0x12 (CHANNEL) with payload 0x13 (TDI).
+        Format: [channel_byte, command, payload, 4-byte-hmac]
+        Example: 02 12 13 e15b25de
+
+        The Tile responds with: [channel_byte, 0x01, 0x0e, data, hmac]
+        Example response: 02 01 0e 2dde220000000013e1f19a1d
+
+        Returns:
+            True if channel command sent successfully
+        """
+        try:
+            CHANNEL_CMD = 0x12  # 18 decimal
+            CHANNEL_PAYLOAD = 0x13  # 19 decimal (TDI)
+
+            # Build command: channel_byte + command + payload
+            cmd_data = bytes([self._channel_byte, CHANNEL_CMD, CHANNEL_PAYLOAD])
+
+            # CRITICAL: Android ToaProcessor.d() increments counter FIRST (line 54), then uses it (line 58)
+            # So: first channel command uses counter=1, second uses counter=2, etc.
+            # Analysis confirms: connectionless commands (TDI, randA, channel open) do NOT increment cuQ
+            # Channel establishment is the FIRST call to ToaProcessor.d(), so cuQ goes from 0 to 1
+            self._tx_counter += 1
+
+            # CRITICAL: HMAC is calculated over [command, payload] WITHOUT channel byte!
+            # ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() ADDS channel byte
+            # Android ToaProcessor.java Line 56-58: bArr3 = [command, payload], HMAC over bArr3
+            # Android ToaMepProcessor.java Line 35-40: m() adds channel byte AFTER
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                bytes([CHANNEL_CMD, CHANNEL_PAYLOAD])
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: cmd_data + signature
+            cmd = cmd_data + signature
+
+            _LOGGER.debug(" Channel establishment command:")
+            _LOGGER.debug("   TX counter: %d (Android cuQ++ before use)", self._tx_counter)
+            _LOGGER.debug("   HMAC data: %s", sig_data.hex())
+            _LOGGER.debug("   Signature: %s", signature.hex())
+            _LOGGER.debug("   Final command: %s (length=%d)", cmd.hex(), len(cmd))
+
+            # Send the command directly without waiting for response
+            # Channel establishment is a "fire and forget" command
+            if not self._client or not self._client.is_connected:
+                raise RuntimeError("Not connected to Tile")
+
+            _LOGGER.debug(" Sending to Tile: %s", cmd.hex())
+            _LOGGER.debug(" Sending channel establishment at: %.3f", asyncio.get_event_loop().time())
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug(" Channel establishment write completed at: %.3f", asyncio.get_event_loop().time())
+            _LOGGER.debug(" Waiting for channel establishment response...")
+            _LOGGER.debug("   Queue size before wait: %d", self._response_queue.qsize())
+            _LOGGER.debug("   Timeout: 2.0 seconds")
+            _LOGGER.debug("   Expected response format: [channel_byte=0x%02x, 0x01, data..., hmac(4)]", self._channel_byte)
+            _LOGGER.debug("   🔍 NOTE: If no response arrives, check if Tile firmware rejects HMAC or if BLE notifications failed")
+
+            # Wait for channel establishment response
+            # BLE capture shows Tile responds with: 02 01 0e [data] [hmac]
+            try:
+                response = await asyncio.wait_for(
+                    self._response_queue.get(), timeout=2.0
+                )
+                _LOGGER.debug("✅ Channel establishment response received: %s (length=%d)", response.hex(), len(response))
+
+                # Verify it's a channel response (starts with channel_byte + 0x01)
+                if len(response) >= 2 and response[0] == self._channel_byte and response[1] == 0x01:
+                    _LOGGER.debug("✅ Channel establishment confirmed by Tile")
+
+                    # Verify HMAC signature on the response
+                    # This is CRITICAL - the Tile expects us to verify responses!
+                    verified, data = self._verify_response_hmac(response)
+                    if verified:
+                        _LOGGER.debug("✅ Channel establishment response HMAC verified!")
+                    else:
+                        _LOGGER.error("❌ Channel establishment response HMAC verification FAILED!")
+                        _LOGGER.error("   This might cause the Tile to reject subsequent commands")
+                        # Don't return False - continue anyway to see what happens
+                else:
+                    _LOGGER.debug("⚠️ Unexpected response format: %s", response.hex())
+
+            except asyncio.TimeoutError:
+                _LOGGER.debug("⚠️ No response to channel establishment (2s timeout)")
+                _LOGGER.debug("   This is CRITICAL - Tile should respond within 100ms")
+                _LOGGER.debug("   Check if notifications are being received!")
+                # Continue anyway - some Tiles might not respond
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ Channel establishment error: %s", err, exc_info=True)
+            return False
+
+    async def _send_tdg_diagnostic(self) -> bool:
+        """Send TDG (Tile Diagnostic) command.
+
+        Based on BLE capture frame 292 which shows this happens after channel establishment.
+        Command: 02 0a 01 [HMAC]
+        - 0a = TDG command
+        - 01 = Transaction type (READ)
+
+        Android code: Line 585 JX() - b((byte) 10, new TdgTransaction().Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            TDG_CMD = 0x0a  # 10 decimal - Tile Diagnostic
+            TDG_READ = 0x01  # Transaction: read diagnostic data
+
+            # Build command payload
+            cmd_payload = bytes([TDG_CMD, TDG_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.debug(" Sending TDG diagnostic...")
+            _LOGGER.debug("   TX counter: %d", self._tx_counter)
+            _LOGGER.debug("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug("TDG diagnostic sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ TDG diagnostic error: %s", err, exc_info=True)
+            return False
+
+    async def _send_adv_int(self) -> bool:
+        """Send AdvInt (Advertisement Interval) command.
+
+        Based on BLE capture frame 298 which shows this happens after TDG.
+        Command: 02 07 02 [HMAC]
+        - 07 = AdvInt command
+        - 02 = Transaction type (READ)
+
+        Android code: Line 751 - b((byte) 7, new AdvIntTransaction((byte) 2).Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            ADVINT_CMD = 0x07  # 7 decimal - Advertisement Interval
+            ADVINT_READ = 0x02  # Transaction: read
+
+            # Build command payload
+            cmd_payload = bytes([ADVINT_CMD, ADVINT_READ])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.debug(" Sending AdvInt...")
+            _LOGGER.debug("   TX counter: %d", self._tx_counter)
+            _LOGGER.debug("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug("AdvInt sent")
+
+            # Don't wait for response - continue with flow
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ AdvInt error: %s", err, exc_info=True)
+            return False
+
+    async def _update_connection_params(self) -> bool:
+        """Update BLE connection parameters for ringing.
+
+        Based on BLE capture frame 300 and Android BleConnParameters.
+        Sets high-latency parameters: 288-304ms intervals, latency 4, timeout 6000ms.
+
+        Android uses BleConnParameters(288, 304, 4, 600) before ringing for
+        more reliable command delivery.
+
+        Returns:
+            True if update sent successfully
+        """
+        try:
+            TCU_CMD = 0x0c  # 12 decimal - Tile Connection Update
+            TCU_SET = 0x03  # Transaction: set parameters
+
+            # Connection parameters (from Android bch high-latency config)
+            min_interval = 288  # * 1.25ms = 360ms
+            max_interval = 304  # * 1.25ms = 380ms
+            latency = 4         # Slave latency
+            timeout = 600       # * 10ms = 6000ms
+
+            # Build parameters (little-endian 16-bit values)
+            params = (
+                min_interval.to_bytes(2, 'little') +
+                max_interval.to_bytes(2, 'little') +
+                latency.to_bytes(2, 'little') +
+                timeout.to_bytes(2, 'little') +
+                bytes([0x0e])  # Flags from BLE capture
+            )
+
+            # Build command payload: command + transaction + params
+            cmd_payload = bytes([TCU_CMD, TCU_SET]) + params
+
+            # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
+            self._tx_counter += 1
+
+            # Calculate HMAC signature - HMAC over [command, payload] WITHOUT channel byte
+            # Android: ToaProcessor.d() calculates HMAC, then ToaMepProcessor.m() adds channel byte
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.debug(" Updating BLE connection parameters:")
+            _LOGGER.debug("   Intervals: %d-%dms, Latency: %d, Timeout: %dms",
+                          int(min_interval * 1.25), int(max_interval * 1.25),
+                          latency, timeout * 10)
+            _LOGGER.debug("   TX counter: %d", self._tx_counter)
+            _LOGGER.debug("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug("Connection parameters sent")
+
+            # Wait briefly for parameter update to take effect
+            await asyncio.sleep(0.3)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ Connection update error: %s", err, exc_info=True)
+            return False
+
+    async def _read_song_features(self) -> bool:
+        """Read available song/ring features from the Tile.
+
+        Based on BLE capture frame 310 which shows this happens before ring command.
+        Command: 02 05 06 [HMAC]
+        - 05 = SONG command
+        - 06 = Transaction type 0x06 (Read features)
+
+        Android code: Line 912 Kc() - b((byte) 5, new SongTransaction((byte) 6).Lc())
+
+        Returns:
+            True if command sent successfully
+        """
+        try:
+            SONG_CMD = 0x05
+            SONG_READ_FEATURES = 0x06  # Read available features/songs
+
+            # Build command payload
+            cmd_payload = bytes([SONG_CMD, SONG_READ_FEATURES])
+
+            # Increment TX counter
+            self._tx_counter += 1
+
+            # Calculate HMAC signature
+            sig_data = self._build_hmac_message(
+                self._tx_counter,
+                cmd_payload
+            )
+            signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+            # Final command: channel_byte + payload + signature
+            cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+            _LOGGER.debug(" Reading song features...")
+            _LOGGER.debug("   TX counter: %d", self._tx_counter)
+            _LOGGER.debug("   Command: %s", cmd.hex())
+
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.debug("Song features read sent")
+
+            # Don't wait for response - Tile may or may not respond
+            # BLE capture shows this is "fire and forget"
+            await asyncio.sleep(0.1)
+
+            return True
+
+        except Exception as err:
+            _LOGGER.error("❌ Song features read error: %s", err, exc_info=True)
             return False
 
     def _compute_sres(
@@ -403,8 +1113,8 @@ class TileBleClient:
         """Compute SRES (Signed Response) value.
 
         Args:
-            rand1: First random value (8 bytes)
-            rand2: Second random value (8 bytes)
+            rand1: First random value
+            rand2: Second random value
             key: Authentication key (16 bytes)
 
         Returns:
@@ -415,58 +1125,240 @@ class TileBleClient:
         h = hmac.new(key, msg, hashlib.sha256)
         return h.digest()[:8]
 
-    def _derive_channel_key(
-        self, rand_a: bytes, rand_t: bytes, auth_key: bytes
+    def _compute_sres_padded(
+        self, rand1: bytes, rand2: bytes, key: bytes
     ) -> bytes:
-        """Derive channel encryption key from authentication values.
+        """Compute SRES with 32-byte padding (node-tile method).
+
+        Based on node-tile's CryptoUtils.generateHmac which pads to 32 bytes.
 
         Args:
-            rand_a: Our random value
-            rand_t: Tile's random value
-            auth_key: Authentication key
+            rand1: First random value
+            rand2: Second random value
+            key: Authentication key (16 bytes)
 
         Returns:
-            16-byte channel key
+            8-byte SRES value
         """
-        msg = rand_a + rand_t + b"channel"
-        h = hmac.new(auth_key, msg, hashlib.sha256)
+        # Concatenate rand1 and rand2, then pad to 32 bytes
+        msg = rand1 + rand2
+        # Pad with zeros to 32 bytes
+        if len(msg) < 32:
+            msg = msg + bytes(32 - len(msg))
+
+        h = hmac.new(key, msg, hashlib.sha256)
+        return h.digest()[:8]
+
+    def _derive_channel_encryption_key(self, channel_data: dict) -> bytes:
+        """Derive channel encryption key from channel opening data.
+
+        Based on Android BaseBleGattCallback.Il() when HR() is true:
+        Returns HMAC-SHA256(authKey, randA + channel_data + channel_byte + connection_id)[:16]
+
+        This is the key used for HMAC signatures on all channel commands.
+
+        Args:
+            channel_data: Dict with 'channel_byte' and 'channel_data' from channel open response
+
+        Returns:
+            16-byte channel encryption key
+        """
+        # Store channel info for later use
+        self._channel_byte = channel_data["channel_byte"]
+        self._channel_data = channel_data["channel_data"]
+
+        # Build message: randA + channel_data + channel_byte + connection_id
+        message = (
+            self._rand_a +
+            self._channel_data +
+            bytes([self._channel_byte]) +
+            self._connection_id
+        )
+
+        _LOGGER.debug(" Deriving channel encryption key:")
+        _LOGGER.debug("   RandA (%d): %s", len(self._rand_a), self._rand_a.hex())
+        _LOGGER.debug("   Channel data (%d): %s", len(self._channel_data), self._channel_data.hex())
+        _LOGGER.debug("   Channel byte: 0x%02x", self._channel_byte)
+        _LOGGER.debug("   Connection ID (%d): %s", len(self._connection_id), self._connection_id.hex())
+        _LOGGER.debug("   Total message (%d): %s", len(message), message.hex())
+
+        # HMAC-SHA256, take first 16 bytes as channel encryption key
+        h = hmac.new(self.auth_key, message, hashlib.sha256)
         return h.digest()[:16]
+
+    def _build_hmac_message(self, counter: int, cmd_data: bytes, is_rx: bool = False) -> bytes:
+        """Build message for HMAC signature calculation.
+
+        Based on Android ToaProcessor.d() line 58 and CryptoUtils.b():
+        HMAC input: counter(8-byte LE) + direction + length + cmd_data (padded to 32 bytes)
+
+        Java: bcK.b(this.cuO, BytesUtils.au(this.cuQ), cuM, new byte[]{length}, bArr3)
+        Where:
+        - this.cuO = channel encryption key (16 bytes) - used as HMAC KEY (param 1)
+        - BytesUtils.au(this.cuQ) = counter as 8-byte little-endian LONG
+        - cuM = {1} for TX, cuN = {0} for RX (direction byte)
+        - new byte[]{length} = payload length
+        - bArr3 = [command, payload...]
+
+        CRITICAL: cmd_data is [command, payload...] WITHOUT channel byte!
+        Android flow:
+          1. ToaProcessor.d() calculates HMAC over [command, payload]
+          2. ToaMepProcessor.m() ADDS channel byte after HMAC calculation
+
+        Args:
+            counter: Transaction counter
+            cmd_data: Command data [command, payload...] WITHOUT channel byte
+            is_rx: True for received responses, False for sent commands
+
+        Returns:
+            32-byte message for HMAC calculation
+        """
+        # CRITICAL FIX: Connection ID is NOT part of the HMAC message!
+        # Android ToaProcessor.d() calls: bcK.b(cuO, counter, direction, length, data)
+        # Where cuO (Il() result) is the HMAC KEY, not part of the message!
+        # CryptoUtils.b() concatenates params 2-5 into message, param 1 is the key.
+
+        # Convert counter to 8-byte little-endian (BytesUtils.au() returns long/8 bytes)
+        # Android BytesUtils.au(): ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(counter)
+        counter_bytes = counter.to_bytes(8, byteorder='little')
+
+        # Build message: counter + direction + length + data
+        # Connection ID is NOT included - it was used to derive the channel_key!
+        direction_byte = bytes([0]) if is_rx else bytes([1])
+        message = counter_bytes + direction_byte + bytes([len(cmd_data)]) + cmd_data
+
+        # Pad to 32 bytes
+        if len(message) < 32:
+            message = message + bytes(32 - len(message))
+
+        return message
+
+    def _verify_response_hmac(self, response: bytes) -> tuple[bool, bytes]:
+        """Verify HMAC signature on a received response.
+
+        Based on Android ToaProcessor.a(ToaTransaction, boolean).
+        Response format: [channel_byte, data..., hmac(4 bytes)]
+
+        Args:
+            response: Full response including channel byte and HMAC
+
+        Returns:
+            Tuple of (verified: bool, data_without_hmac: bytes)
+        """
+        if len(response) < 6:  # Minimum: channel + 1 byte data + 4 byte HMAC
+            _LOGGER.warning("⚠️ Response too short for HMAC verification: %d bytes", len(response))
+            return (False, response)
+
+        # Split response: [channel_byte, data..., hmac]
+        # Last 4 bytes are HMAC, everything before is data
+        data_with_channel = response[:-4]
+        received_hmac = response[-4:]
+
+        # Data without channel byte (for HMAC calculation)
+        # ToaProcessor removes channel byte before HMAC calculation
+        data_without_channel = data_with_channel[1:]
+
+        # Increment RX counter BEFORE verification
+        # This matches Android: line 100 increments cuR, then line 101 calls HMAC verification
+        self._rx_counter += 1
+
+        # Calculate expected HMAC using RX counter
+        hmac_msg = self._build_hmac_message(self._rx_counter, data_without_channel, is_rx=True)
+        expected_hmac = hmac.new(self._channel_key, hmac_msg, hashlib.sha256).digest()[:4]
+
+        _LOGGER.debug(" RX HMAC verification:")
+        _LOGGER.debug("   RX counter: %d", self._rx_counter)
+        _LOGGER.debug("   Data (no channel): %s", data_without_channel.hex())
+        _LOGGER.debug("   HMAC message: %s", hmac_msg.hex())
+        _LOGGER.debug("   Expected HMAC: %s", expected_hmac.hex())
+        _LOGGER.debug("   Received HMAC: %s", received_hmac.hex())
+
+        # Verify HMAC matches
+        if expected_hmac == received_hmac:
+            _LOGGER.debug("RX HMAC verified")
+            return (True, data_with_channel)
+        else:
+            _LOGGER.error("❌ RX HMAC mismatch!")
+            # Decrement counter since verification failed
+            self._rx_counter -= 1
+            return (False, data_with_channel)
 
     def _build_ring_command(
         self,
         volume: TileVolume = TileVolume.MED,
         duration_seconds: int = 30,
     ) -> bytes:
-        """Build the ring/find command.
+        """Build the ring/find command using channel-based SONG command.
+
+        Based on BLE capture frame 314: 02 05 02 01 03 1e [4-byte-hmac]
+        - Channel byte: 0x02
+        - Command: 0x05 (SONG)
+        - Transaction: 0x02 (PLAY/RING)
+        - Flags: 0x01
+        - Volume level: volume value (1=LOW, 2=MED, 3=HIGH)
+        - Duration: seconds
+        - HMAC: 4-byte signature
 
         Args:
             volume: Ring volume level
             duration_seconds: How long to ring
 
         Returns:
-            Command bytes
+            Command bytes (channel-based with HMAC)
         """
-        # TOA Song command format:
-        # [SONG, transaction_type, volume_type, volume_level, duration?]
-        cmd = bytes([
-            ToaCommand.SONG,
-            SongType.RING,  # Ring transaction type
-            1,  # Volume type indicator
-            volume.value,  # Volume level (1=LOW, 2=MED, 3=HIGH)
+        SONG_CMD = 0x05
+        SONG_PLAY = 0x02  # Play/ring transaction
+        SONG_FLAGS = 0x01  # Standard flags from BLE capture
+
+        # Build command data (without channel byte or HMAC)
+        # This is what goes into the HMAC calculation
+        cmd_payload = bytes([
+            SONG_CMD,
+            SONG_PLAY,
+            SONG_FLAGS,
+            volume.value,  # Volume level (1-3)
             duration_seconds,  # Duration in seconds
         ])
+
+        # Increment TX counter FIRST (Android: line 54), then use for HMAC (line 58)
+        self._tx_counter += 1
+
+        # Calculate HMAC signature using channel encryption key
+        # Based on ToaProcessor.d(): HMAC over counter + {1} + length + [command, payload]
+        # CRITICAL: HMAC does NOT include channel byte (added later by ToaMepProcessor.m())
+        sig_data = self._build_hmac_message(
+            self._tx_counter,
+            cmd_payload
+        )
+        signature = hmac.new(self._channel_key, sig_data, hashlib.sha256).digest()[:4]
+
+        # Build final command: channel_byte + cmd_payload + signature
+        cmd = bytes([self._channel_byte]) + cmd_payload + signature
+
+        _LOGGER.debug(" Ring command built:")
+        _LOGGER.debug("   TX counter: %d", self._tx_counter)
+        _LOGGER.debug("   Channel byte: 0x%02x", self._channel_byte)
+        _LOGGER.debug("   Command payload: %s", cmd_payload.hex())
+        _LOGGER.debug("   HMAC message: %s", sig_data.hex())
+        _LOGGER.debug("   Signature: %s", signature.hex())
+        _LOGGER.debug("   Final command: %s", cmd.hex())
+
         return cmd
 
     def _build_stop_command(self) -> bytes:
-        """Build the stop ring command.
+        """Build the stop ring command using TRM (Tile Ring Module).
 
         Returns:
-            Command bytes
+            Command bytes (MEP-wrapped)
         """
-        cmd = bytes([
-            ToaCommand.SONG,
-            SongType.STOP,  # Stop
-        ])
+        # MEP header for connectionless commands
+        MEP_CONNECTIONLESS = bytes([0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+
+        # TRM STOP_RING command (no data payload needed)
+        cmd_payload = bytes([ToaCommand.TRM, TrmType.STOP_RING])
+
+        # Wrap in MEP format
+        cmd = MEP_CONNECTIONLESS + cmd_payload
         return cmd
 
     async def ring(
@@ -494,18 +1386,55 @@ class TileBleClient:
                 return False
 
         try:
-            _LOGGER.info("🔔 Sending ring command (volume=%s, duration=%ds)...", volume.name, duration_seconds)
+            # CRITICAL: Send intermediate commands to maintain counter synchronization!
+            # Based on BLE capture analysis, the Tile expects these commands before ring:
+            # 1. Channel Establishment (counter=1) - already done in authenticate()
+            # 2. TDG Diagnostic (counter=2)
+            # 3. AdvInt (counter=3)
+            # 4. TCU Connection Update (counter=4)
+            # 5. SONG READ_FEATURES (counter=5)
+            # 6. SONG PLAY/RING (counter=6)
+            #
+            # Why? The counter is embedded in HMAC but not sent separately.
+            # The Tile tracks RX counter independently and validates HMAC using it.
+            # If we skip commands, counter desyncs and HMAC validation fails!
+            _LOGGER.debug(" Sending pre-ring command sequence to sync counter...")
+
+            # Command 2: TDG Diagnostic
+            if not await self._send_tdg_diagnostic():
+                _LOGGER.warning("⚠️ TDG failed, continuing anyway...")
+
+            # Command 3: AdvInt
+            if not await self._send_adv_int():
+                _LOGGER.warning("⚠️ AdvInt failed, continuing anyway...")
+
+            # Command 4: TCU Connection Update
+            if not await self._update_connection_params():
+                _LOGGER.warning("⚠️ TCU failed, continuing anyway...")
+
+            # Command 5: SONG READ_FEATURES
+            if not await self._read_song_features():
+                _LOGGER.warning("⚠️ READ_FEATURES failed, continuing anyway...")
+
+            # Command 6: SONG PLAY (RING)
+            # Use channel-based SONG command (matches BLE capture Frame 314 EXACTLY)
+            # BLE capture shows: 02 05 02 01 03 1e [HMAC]
+            # This is the EXACT command that made THIS Cat Tile ring!
+            _LOGGER.debug("Using channel-based SONG command")
+            _LOGGER.debug("   TX counter should now be 6 (matching BLE capture!)")
+
             cmd = self._build_ring_command(volume, duration_seconds)
-            _LOGGER.debug("Ring command bytes: %s", cmd.hex())
-            response = await self._send_command(cmd)
+            _LOGGER.debug("Ring command: %s", cmd.hex())
 
-            # Check response
-            if len(response) > 0:
-                _LOGGER.info("✅ Tile ring command sent successfully! Response: %s", response.hex())
-                return True
+            # Send ring command directly without waiting for response
+            # Ring commands are "fire and forget" - Tile doesn't respond
+            if not self._client or not self._client.is_connected:
+                raise RuntimeError("Not connected to Tile")
 
-            _LOGGER.warning("⚠️  No response to ring command (this may be normal)")
-            # Some Tiles may not respond but still ring, so return True
+            _LOGGER.debug("Sending ring: %s", cmd.hex())
+            await self._client.write_gatt_char(MEP_COMMAND_CHAR_UUID, cmd)
+            _LOGGER.info("✅ Ring command sent - Tile should be ringing")
+
             return True
 
         except Exception as err:
@@ -539,6 +1468,8 @@ async def ring_tile_ble(
     volume: TileVolume = TileVolume.MED,
     duration_seconds: int = 30,
     scan_timeout: float = 10.0,
+    on_auth_success: Any | None = None,
+    known_auth_method: int | None = None,
 ) -> bool:
     """High-level function to ring a Tile via BLE.
 
@@ -548,6 +1479,8 @@ async def ring_tile_ble(
         volume: Ring volume level
         duration_seconds: Ring duration
         scan_timeout: BLE scan timeout
+        on_auth_success: Optional callback(tile_id, method_number) called when auth succeeds
+        known_auth_method: Optional previously successful auth method number (1-20)
 
     Returns:
         True if successfully rang the Tile
@@ -573,7 +1506,12 @@ async def ring_tile_ble(
         _LOGGER.error("❌ Invalid auth key length: %d (expected 16)", len(auth_key))
         return False
 
-    client = TileBleClient(tile_id, auth_key)
+    client = TileBleClient(
+        tile_id,
+        auth_key,
+        on_auth_success=on_auth_success,
+        known_auth_method=known_auth_method,
+    )
 
     try:
         # Scan for the Tile
@@ -669,9 +1607,9 @@ async def discover_and_verify_tile_macs(
         _LOGGER.error("❌ bleak library not available for BLE communication")
         return {}
 
-    _LOGGER.warning("═══════════════════════════════════════════════════════════")
-    _LOGGER.warning("🔍 DIAGNOSTIC: Discovering ALL Tiles and reading device IDs")
-    _LOGGER.warning("═══════════════════════════════════════════════════════════")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.debug(" DIAGNOSTIC: Discovering ALL Tiles and reading device IDs")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
 
     discovered_tiles = []
     mac_to_id_map = {}
@@ -681,12 +1619,23 @@ async def discover_and_verify_tile_macs(
         try:
             from homeassistant.components import bluetooth
 
-            _LOGGER.warning("🔍 Using Home Assistant Bluetooth backend to find Tiles...")
+            _LOGGER.debug(" Using Home Assistant Bluetooth backend to find Tiles...")
 
             # Get all devices from HA's Bluetooth backend
             service_info_list = bluetooth.async_discovered_service_info(hass)
 
-            _LOGGER.warning("📡 HA Bluetooth backend sees %d devices total", len(service_info_list))
+            _LOGGER.debug(" HA Bluetooth backend sees %d devices total", len(service_info_list))
+
+            # DEBUG: Log ALL devices to see what we're checking
+            _LOGGER.debug(" DEBUG: Listing ALL %d devices from HA Bluetooth:", len(service_info_list))
+            for idx, service_info in enumerate(service_info_list, 1):
+                _LOGGER.debug("   %d. %s (%s) - Service UUIDs: %s",
+                              idx,
+                              service_info.name or "Unknown",
+                              service_info.address,
+                              service_info.service_uuids if service_info.service_uuids else "None")
+
+            _LOGGER.debug(" Looking for Tile service UUID: %s", TILE_SERVICE_UUID)
 
             # Filter for Tiles
             for service_info in service_info_list:
@@ -698,7 +1647,7 @@ async def discover_and_verify_tile_macs(
                     # Convert ServiceInfo to BLEDevice
                     discovered_tiles.append(service_info.device)
 
-            _LOGGER.warning("🔍 Found %d Tile(s) from HA Bluetooth", len(discovered_tiles))
+            _LOGGER.debug(" Found %d Tile(s) from HA Bluetooth", len(discovered_tiles))
 
         except Exception as err:
             _LOGGER.error("❌ Failed to use HA Bluetooth backend: %s", err)
@@ -721,7 +1670,7 @@ async def discover_and_verify_tile_macs(
 
         try:
             # Scan for Tiles
-            _LOGGER.warning("🔍 Scanning for Tile devices (filtering by service UUID)...")
+            _LOGGER.debug(" Scanning for Tile devices (filtering by service UUID)...")
             scanner = BleakScanner(
                 detection_callback=detection_callback,
                 service_uuids=[TILE_SERVICE_UUID],
@@ -731,7 +1680,7 @@ async def discover_and_verify_tile_macs(
             await asyncio.sleep(scan_timeout)
             await scanner.stop()
 
-            _LOGGER.warning("🔍 Scan complete - found %d Tile(s)", len(discovered_tiles))
+            _LOGGER.debug(" Scan complete - found %d Tile(s)", len(discovered_tiles))
         except Exception as scan_err:
             _LOGGER.error("❌ Scan failed: %s", scan_err)
             discovered_tiles = []
@@ -740,19 +1689,19 @@ async def discover_and_verify_tile_macs(
 
         if not discovered_tiles:
             _LOGGER.warning("⚠️  No Tiles found in range - make sure they're nearby and awake")
-            _LOGGER.warning("💡 Try pressing the button on each Tile to wake it up")
+            _LOGGER.debug(" Try pressing the button on each Tile to wake it up")
             return {}
 
         # Now connect to each discovered Tile and read its device ID
         for device in discovered_tiles:
-            _LOGGER.warning("─────────────────────────────────────────────────────────")
+            _LOGGER.debug("─────────────────────────────────────────────────────────")
             _LOGGER.warning("📱 Connecting to Tile at %s...", device.address)
 
             client = None
             try:
                 # Use bleak-retry-connector for reliable connections with HA Bluetooth
                 if hass is not None:
-                    _LOGGER.warning("🔌 Using bleak-retry-connector with HA Bluetooth backend...")
+                    _LOGGER.debug(" Using bleak-retry-connector with HA Bluetooth backend...")
                     client = await establish_connection(
                         BleakClientWithServiceCache,
                         device,
@@ -761,7 +1710,7 @@ async def discover_and_verify_tile_macs(
                         max_attempts=3,
                     )
                 else:
-                    _LOGGER.warning("🔌 Using direct BleakClient connection...")
+                    _LOGGER.debug(" Using direct BleakClient connection...")
                     client = BleakClient(device, timeout=30.0)
                     await asyncio.wait_for(client.connect(), timeout=30.0)
 
@@ -777,39 +1726,39 @@ async def discover_and_verify_tile_macs(
                     tile_id_hex = tile_id_bytes.hex()
 
                     _LOGGER.warning("✅ SUCCESS! Read device ID from Tile:")
-                    _LOGGER.warning("   MAC Address: %s", device.address)
-                    _LOGGER.warning("   Device ID:   %s", tile_id_hex)
+                    _LOGGER.debug("   MAC Address: %s", device.address)
+                    _LOGGER.debug("   Device ID:   %s", tile_id_hex)
 
                     # Store the mapping
                     mac_to_id_map[device.address] = tile_id_hex
 
                     # Verify against our derivation formula
                     derived_mac = TileBleClient(tile_id_hex, b"0"*16)._tile_id_to_mac(tile_id_hex)
-                    _LOGGER.warning("   Derived MAC: %s", derived_mac)
+                    _LOGGER.debug("   Derived MAC: %s", derived_mac)
 
                     if derived_mac.upper() == device.address.upper():
-                        _LOGGER.warning("   ✅ MATCH! Our derivation formula is CORRECT!")
+                        _LOGGER.debug("   ✅ MATCH! Our derivation formula is CORRECT!")
                     else:
-                        _LOGGER.warning("   ❌ MISMATCH! Our derivation formula is WRONG!")
-                        _LOGGER.warning("   Expected: %s", derived_mac)
-                        _LOGGER.warning("   Got:      %s", device.address)
+                        _LOGGER.debug("   ❌ MISMATCH! Our derivation formula is WRONG!")
+                        _LOGGER.debug("   Expected: %s", derived_mac)
+                        _LOGGER.debug("   Got:      %s", device.address)
 
                 except Exception as char_err:
                     _LOGGER.error("❌ Failed to read device ID characteristic: %s", char_err)
-                    _LOGGER.warning("💡 Trying to list all characteristics...")
+                    _LOGGER.debug(" Trying to list all characteristics...")
 
                     # List all services and characteristics as fallback
                     try:
                         for service in client.services:
-                            _LOGGER.warning("   Service: %s", service.uuid)
+                            _LOGGER.debug("   Service: %s", service.uuid)
                             for char in service.characteristics:
-                                _LOGGER.warning("      Char: %s (properties: %s)",
+                                _LOGGER.debug("      Char: %s (properties: %s)",
                                               char.uuid, char.properties)
                                 # Try to read if readable
                                 if "read" in char.properties:
                                     try:
                                         value = await client.read_gatt_char(char.uuid)
-                                        _LOGGER.warning("         Value: %s (hex: %s)",
+                                        _LOGGER.debug("         Value: %s (hex: %s)",
                                                       value, value.hex())
                                     except Exception:
                                         pass
@@ -827,18 +1776,430 @@ async def discover_and_verify_tile_macs(
                     except Exception:
                         pass
 
-        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
         _LOGGER.warning("📊 FINAL RESULTS:")
-        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
         if mac_to_id_map:
             for mac, tile_id in mac_to_id_map.items():
                 _LOGGER.warning("MAC: %s → Tile ID: %s", mac, tile_id)
         else:
             _LOGGER.warning("⚠️  No device IDs were successfully read")
-        _LOGGER.warning("═══════════════════════════════════════════════════════════")
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
 
         return mac_to_id_map
 
     except Exception as err:
         _LOGGER.error("❌ Diagnostic scan failed: %s", err, exc_info=True)
         return {}
+
+
+async def diagnose_ring_all_ble_devices(
+    hass,
+    auth_keys: dict[str, bytes],
+) -> dict[str, str]:
+    """Try to ring ALL BLE devices to find which ones are Tiles.
+
+    This is a brute-force diagnostic that attempts to connect and ring every
+    BLE device seen by Home Assistant to discover which MACs are actually Tiles.
+
+    Args:
+        hass: Home Assistant instance
+        auth_keys: Dict mapping Tile IDs to auth keys from API
+
+    Returns:
+        Dictionary mapping MAC addresses to results (success/failure)
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔥 DIAGNOSTIC: Trying to ring EVERY BLE device!")
+    _LOGGER.warning("⚠️  WARNING: This will attempt connections to ALL nearby devices")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+    from homeassistant.components import bluetooth
+
+    # Get all devices from HA's Bluetooth backend - make a list copy to avoid modification during iteration
+    service_info_list = list(bluetooth.async_discovered_service_info(hass))
+
+    _LOGGER.debug(" Found %d BLE devices total", len(service_info_list))
+
+    results = {}
+
+    if not auth_keys:
+        _LOGGER.error("❌ No auth keys provided - cannot authenticate with Tiles")
+        return {}
+
+    _LOGGER.warning("🔑 Have %d auth keys to try", len(auth_keys))
+
+    # Try each device once
+    for idx, service_info in enumerate(service_info_list, 1):
+        device = service_info.device
+        _LOGGER.debug("─────────────────────────────────────────────────────────")
+        _LOGGER.warning("📱 %d/%d: Testing %s (%s)",
+                      idx, len(service_info_list),
+                      service_info.name or "Unknown",
+                      device.address)
+
+        client = None
+        try:
+            # Try to connect
+            _LOGGER.debug("   🔌 Connecting...")
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                device.name or device.address,
+                disconnected_callback=lambda _: None,
+                max_attempts=1,  # Only 1 attempt to keep it fast
+                timeout=10.0,
+            )
+
+            if not client.is_connected:
+                _LOGGER.debug("   ❌ Connection failed")
+                results[device.address] = "connection_failed"
+                continue
+
+            _LOGGER.debug("   ✅ Connected!")
+
+            # Try to subscribe to Tile response characteristic
+            try:
+                response_data = None
+
+                def response_handler(sender, data):
+                    nonlocal response_data
+                    response_data = data
+
+                await client.start_notify(MEP_RESPONSE_CHAR_UUID, response_handler)
+                _LOGGER.debug("   ✅ Subscribed to Tile response characteristic")
+
+                # Try authentication with EACH auth key until one works
+                auth_success = False
+                working_tile_id = None
+                working_auth_key = None
+
+                for tile_id, auth_key in auth_keys.items():
+                    _LOGGER.debug("   🔐 Trying auth key for Tile: %s", tile_id)
+                    response_data = None  # Reset for each attempt
+
+                    rand_a = os.urandom(8)
+                    auth_cmd = bytes([ToaCommand.AUTH]) + rand_a
+                    await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, auth_cmd)
+
+                    # Wait for response
+                    await asyncio.sleep(1.0)
+
+                    if response_data and len(response_data) >= 17:
+                        _LOGGER.debug("   ✅ Got Tile auth response! THIS IS A TILE!")
+                        _LOGGER.debug("   🎉 FOUND TILE AT: %s", device.address)
+
+                        # Try to ring it
+                        rand_t = response_data[1:9]
+                        sres_t = response_data[9:17]
+
+                        # Compute our response
+                        msg = rand_a + rand_t
+                        h = hmac.new(auth_key, msg, hashlib.sha256)
+                        sres_a = h.digest()[:8]
+
+                        # Send our sres
+                        ack_cmd = bytes([ToaCommand.AUTH]) + sres_a
+                        await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, ack_cmd)
+                        await asyncio.sleep(0.5)
+
+                        # Send ring command
+                        _LOGGER.debug("   🔔 Sending ring command...")
+                        ring_cmd = bytes([ToaCommand.SONG, SongType.RING, 1, 3, 10])
+                        await client.write_gatt_char(MEP_COMMAND_CHAR_UUID, ring_cmd)
+
+                        _LOGGER.debug("   ✅ Ring command sent! Listen for the Tile!")
+                        results[device.address] = f"SUCCESS_TILE_{tile_id}"
+                        auth_success = True
+                        break  # Found the right auth key, stop trying others
+
+                if not auth_success:
+                    _LOGGER.debug("   ❌ No Tile response - not a Tile or wrong auth keys")
+                    results[device.address] = "not_a_tile"
+
+            except Exception as char_err:
+                _LOGGER.debug("   ❌ Not a Tile (no characteristic): %s", str(char_err)[:50])
+                results[device.address] = "not_a_tile"
+
+        except asyncio.TimeoutError:
+            _LOGGER.debug("   ⏱️  Timeout")
+            results[device.address] = "timeout"
+        except Exception as err:
+            _LOGGER.debug("   ❌ Error: %s", str(err)[:50])
+            results[device.address] = f"error: {str(err)[:30]}"
+        finally:
+            if client and client.is_connected:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("📊 RING ALL RESULTS:")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    for mac, result in results.items():
+        if "SUCCESS" in result:
+            _LOGGER.warning("🎉 %s → %s", mac, result)
+        else:
+            _LOGGER.debug("   %s → %s", mac, result)
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+    return results
+
+
+async def diagnose_ring_tile_by_mac(
+    mac_address: str,
+    tile_id: str,
+    auth_key: bytes,
+    scan_timeout: float = 120.0,
+) -> dict[str, Any]:
+    """Test ringing a specific Tile by MAC address.
+
+    This diagnostic connects directly to a known MAC and attempts to ring it.
+    Uses persistent scanning that stops as soon as the Tile is found.
+
+    Args:
+        mac_address: The MAC address to connect to
+        tile_id: The Tile device ID (for logging)
+        auth_key: The authentication key
+        scan_timeout: Max seconds to scan for Tile (default 120s = 2 min)
+
+    Returns:
+        Dictionary with test results
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔔 DIAGNOSTIC: Test ring Tile via BLE")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.debug("   Target MAC: %s", mac_address)
+    _LOGGER.debug("   Tile ID: %s", tile_id)
+    _LOGGER.debug("   Auth key length: %d bytes", len(auth_key))
+    _LOGGER.debug("   Scan timeout: %.0f seconds (will stop early if found)", scan_timeout)
+
+    try:
+        # Create Tile BLE client with the Tile ID (not MAC address!)
+        client = TileBleClient(tile_id, auth_key, timeout=scan_timeout)
+
+        _LOGGER.debug(" Connecting to Tile...")
+        _LOGGER.debug("   Scanning for device...")
+        connected = await client.connect()
+
+        if not connected:
+            _LOGGER.error("❌ Failed to connect")
+            # Check if device was found during scan
+            device_found = client._device is not None
+            return {
+                "success": False,
+                "error": "Connection failed",
+                "device_found_in_scan": device_found,
+                "scanned_for_mac": client._tile_id_to_mac(tile_id),
+            }
+
+        _LOGGER.warning("✅ Connected!")
+
+        # Authenticate
+        _LOGGER.debug(" Authenticating...")
+        auth_success = await client.authenticate()
+
+        if not auth_success:
+            _LOGGER.error("❌ Authentication failed")
+            await client.disconnect()
+            return {"success": False, "error": "Authentication failed"}
+
+        _LOGGER.warning("✅ Authenticated!")
+
+        # Ring the Tile
+        _LOGGER.warning("🔔 Sending ring command...")
+        ring_success = await client.ring(volume=TileVolume.HIGH, duration_seconds=10)
+
+        if ring_success:
+            _LOGGER.warning("🎉 SUCCESS! Tile should be ringing for 10 seconds!")
+            _LOGGER.warning("🔊 Listen for the Tile ringing...")
+        else:
+            _LOGGER.error("❌ Ring command failed")
+
+        await client.disconnect()
+        _LOGGER.warning("✅ Disconnected")
+
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
+        return {
+            "success": ring_success,
+            "mac_address": mac_address,
+            "tile_id": tile_id,
+            "connected": True,
+            "authenticated": True,
+            "rang": ring_success,
+        }
+
+    except Exception as err:
+        _LOGGER.error("❌ Test failed: %s", err, exc_info=True)
+        return {
+            "success": False,
+            "error": str(err),
+            "mac_address": mac_address,
+            "tile_id": tile_id,
+        }
+
+
+async def diagnose_list_tiles(coordinator) -> dict[str, Any]:
+    """List all cached Tile devices with their IDs, MACs, and auth keys.
+
+    Args:
+        coordinator: The Life360 coordinator instance
+
+    Returns:
+        Dictionary with all Tile device information
+    """
+    result = {
+        "tiles": [],
+        "count": 0,
+    }
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("📋 DIAGNOSTIC: List all cached Tile devices")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+    # Get all Tile devices from MAC cache
+    for device_id, mac_address in coordinator._tile_mac_cache.items():
+        # Try to find the Tile ID from auth cache
+        tile_id = None
+        has_auth = False
+
+        for tid, auth_key in coordinator._tile_auth_cache.items():
+            # Derive MAC from this Tile ID to see if it matches
+            derived_mac = TileBleClient._tile_id_to_mac(tid)
+            if derived_mac.upper() == mac_address.upper():
+                tile_id = tid
+                has_auth = True
+                break
+
+        tile_info = {
+            "device_id": device_id,
+            "mac_address": mac_address,
+            "tile_id": tile_id or "Unknown",
+            "has_auth_key": has_auth,
+        }
+
+        result["tiles"].append(tile_info)
+
+        _LOGGER.warning(
+            "  🔹 Device: %s\n"
+            "     MAC: %s\n"
+            "     Tile ID: %s\n"
+            "     Auth: %s",
+            device_id,
+            mac_address,
+            tile_id or "Unknown",
+            "✓" if has_auth else "✗"
+        )
+
+    result["count"] = len(result["tiles"])
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("✅ Found %d Tile device(s)", result["count"])
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+    return result
+
+
+async def diagnose_raw_ble_scan(scan_timeout: float = 30.0) -> dict[str, Any]:
+    """Direct BLE scan bypassing HA's backend to capture raw advertisement data.
+
+    This diagnostic uses BleakScanner directly to see all advertisement data
+    including service UUIDs, service data, manufacturer data, etc.
+
+    Args:
+        scan_timeout: How long to scan in seconds
+
+    Returns:
+        Dictionary with scan results and details
+    """
+    if not BLEAK_AVAILABLE:
+        _LOGGER.error("❌ bleak library not available for BLE communication")
+        return {}
+
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+    _LOGGER.warning("🔬 DIAGNOSTIC: Raw BLE scan (bypassing HA Bluetooth)")
+    _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+    devices_found = {}
+    tiles_found = []
+
+    def detection_callback(device: BLEDevice, advertisement_data):
+        """Callback for each detected BLE device - log EVERYTHING."""
+        if device.address not in devices_found:
+            # Log complete advertisement data
+            service_uuids = list(advertisement_data.service_uuids) if advertisement_data.service_uuids else []
+            service_data = dict(advertisement_data.service_data) if advertisement_data.service_data else {}
+            manufacturer_data = dict(advertisement_data.manufacturer_data) if advertisement_data.manufacturer_data else {}
+
+            devices_found[device.address] = {
+                "name": device.name,
+                "rssi": advertisement_data.rssi,
+                "service_uuids": service_uuids,
+                "service_data": {k: v.hex() for k, v in service_data.items()},
+                "manufacturer_data": {k: v.hex() for k, v in manufacturer_data.items()},
+                "local_name": advertisement_data.local_name,
+            }
+
+            _LOGGER.warning("📱 Device: %s (%s)", device.name or device.address, device.address)
+            _LOGGER.debug("   RSSI: %s dBm", advertisement_data.rssi)
+            _LOGGER.debug("   Service UUIDs: %s", service_uuids or "None")
+            if service_data:
+                _LOGGER.debug("   Service Data:")
+                for uuid, data in service_data.items():
+                    _LOGGER.debug("      %s: %s", uuid, data.hex())
+            if manufacturer_data:
+                _LOGGER.debug("   Manufacturer Data:")
+                for company_id, data in manufacturer_data.items():
+                    _LOGGER.debug("      Company %s: %s", hex(company_id), data.hex())
+
+            # Check if this is a Tile
+            if TILE_SERVICE_UUID in service_uuids:
+                _LOGGER.debug("   🎉 THIS IS A TILE!")
+                tiles_found.append(device.address)
+
+            # Also check for 0xFEED in service data or 16-bit UUID format
+            if "0000feed-0000-1000-8000-00805f9b34fb" in service_uuids or \
+               any("feed" in str(uuid).lower() for uuid in service_uuids):
+                _LOGGER.debug("   🎉 FOUND FEED UUID!")
+                if device.address not in tiles_found:
+                    tiles_found.append(device.address)
+
+    try:
+        _LOGGER.debug(" Starting direct BLE scan for %d seconds...", scan_timeout)
+        _LOGGER.debug(" Press Tile buttons NOW to wake them up!")
+
+        scanner = BleakScanner(detection_callback=detection_callback)
+
+        await scanner.start()
+        await asyncio.sleep(scan_timeout)
+        await scanner.stop()
+
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
+        _LOGGER.warning("📊 SCAN RESULTS:")
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
+        _LOGGER.debug("   Total devices found: %d", len(devices_found))
+        _LOGGER.debug("   Tiles identified: %d", len(tiles_found))
+        if tiles_found:
+            _LOGGER.debug("   Tile MACs: %s", tiles_found)
+        _LOGGER.debug("═══════════════════════════════════════════════════════════")
+
+        return {
+            "total_devices": len(devices_found),
+            "tiles_found": len(tiles_found),
+            "tile_macs": tiles_found,
+            "all_devices": devices_found,
+        }
+
+    except Exception as err:
+        _LOGGER.error("❌ Direct scan failed: %s", err, exc_info=True)
+        return {}
+

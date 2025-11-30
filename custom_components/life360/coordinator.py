@@ -1585,12 +1585,21 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if ring command was sent successfully
         """
-        # For Tile devices, try BLE first if available
+        # For Tile devices, ONLY BLE is supported (no cloud API)
         if provider == "tile":
             ble_success = await self._ring_tile_ble(device_id, cid)
             if ble_success:
                 return True
-            _LOGGER.debug("Tile BLE ring failed, falling back to server API")
+
+            # Tiles do NOT have a cloud API for ring commands - BLE only
+            _LOGGER.warning(
+                "Failed to ring Tile %s via Bluetooth. "
+                "Tiles require Bluetooth proximity for ringing. "
+                "Ensure Home Assistant is within BLE range (~30m) of the Tile device. "
+                "Cloud API is NOT available for Tile devices - only Jiobits support remote ringing.",
+                device_id
+            )
+            return False
 
         # For Jiobit devices, try new v6 API structure first
         if provider == "jiobit":
@@ -1606,6 +1615,7 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 return True
             _LOGGER.debug("Jiobit v6 buzz failed, falling back to legacy API")
 
+        # Legacy fallback for Jiobit and other providers
         # Feature ID 1 = ring/buzz
         return await self.send_device_command(
             device_id, cid, provider, feature_id=1, enable=True,
@@ -1628,13 +1638,22 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         Returns:
             True if stop command was sent successfully
         """
-        # For Tile devices, try BLE first if available
+        # For Tile devices, ONLY BLE is supported (no cloud API)
         if provider == "tile":
             ble_success = await self._stop_ring_tile_ble(device_id, cid)
             if ble_success:
                 return True
-            _LOGGER.debug("Tile BLE stop failed, falling back to server API")
 
+            # Tiles do NOT have a cloud API - BLE only
+            _LOGGER.warning(
+                "Failed to stop ringing Tile %s via Bluetooth. "
+                "Tiles require Bluetooth proximity. "
+                "Cloud API is NOT available for Tile devices.",
+                device_id
+            )
+            return False
+
+        # Legacy fallback for Jiobit and other providers
         # Feature ID 1 = ring/buzz, enable=False to stop
         return await self.send_device_command(
             device_id, cid, provider, feature_id=1, enable=False,

@@ -1389,9 +1389,37 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
         return integrations
 
     async def send_jiobit_command(
-        self, device_id: str, cid: CircleID, command: str = "buzz"
+        self,
+        device_id: str,
+        cid: CircleID,
+        command: str = "buzz",
+        duration: int = 30,
+        volume: str = "high",
     ) -> bool:
-        """Send command to Jiobit device (e.g., buzz to find pet)."""
+        """Send command to Jiobit device (e.g., buzz to find pet).
+
+        This method tries both the APK-discovered command structure and
+        the legacy structure for maximum compatibility.
+
+        Args:
+            device_id: Life360 device ID
+            cid: Circle ID
+            command: Command to send (buzz, ring, locate, sound)
+            duration: Duration in seconds
+            volume: Volume level (low, medium, high)
+
+        Returns:
+            True if command was sent successfully
+        """
+        # Try the new v6 API method first (APK-discovered structure)
+        _LOGGER.debug("Trying APK-discovered command structure for Jiobit %s", device_id)
+        success = await self.buzz_jiobit_v6(device_id, cid, duration, volume, command)
+        if success:
+            return True
+
+        _LOGGER.debug("APK structure failed, trying legacy structure")
+
+        # Fallback to legacy simple command structure
         circle_data = self.data.circles.get(cid)
         if not circle_data:
             return False
@@ -1417,16 +1445,16 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
                 session = self._acct_data[aid].session
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status in (200, 201, 204):
-                        _LOGGER.info("Jiobit command '%s' sent to %s", command, device_id)
+                        _LOGGER.info("✅ Jiobit legacy command '%s' sent to %s", command, device_id)
                         return True
                     else:
+                        resp_text = await resp.text()
                         _LOGGER.debug(
-                            "Jiobit command failed: %s - %s",
-                            resp.status,
-                            await resp.text(),
+                            "Jiobit legacy command failed: %s - %s",
+                            resp.status, resp_text
                         )
             except Exception as err:
-                _LOGGER.debug("Error sending Jiobit command: %s", err)
+                _LOGGER.debug("Error sending Jiobit legacy command: %s", err)
 
         return False
 
@@ -1563,6 +1591,20 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             if ble_success:
                 return True
             _LOGGER.debug("Tile BLE ring failed, falling back to server API")
+
+        # For Jiobit devices, try new v6 API structure first
+        if provider == "jiobit":
+            # Map strength to volume (1=low, 2=medium, 3=high)
+            volume_map = {1: "low", 2: "medium", 3: "high"}
+            volume = volume_map.get(strength, "medium")
+
+            # Try new v6 API method first
+            v6_success = await self.buzz_jiobit_v6(
+                device_id, cid, duration, volume, command="buzz"
+            )
+            if v6_success:
+                return True
+            _LOGGER.debug("Jiobit v6 buzz failed, falling back to legacy API")
 
         # Feature ID 1 = ring/buzz
         return await self.send_device_command(
@@ -2158,6 +2200,265 @@ class CirclesMembersDataUpdateCoordinator(DataUpdateCoordinator[CirclesMembersDa
             auth_key,
             scan_timeout=10.0,
         )
+
+    async def buzz_jiobit_v6(
+        self,
+        device_id: str,
+        cid: CircleID,
+        duration: int = 30,
+        volume: str = "high",
+        command: str = "buzz",
+    ) -> bool:
+        """Ring/buzz a Jiobit device using Life360 v6 command API.
+
+        This uses the simplified v6 command structure discovered from APK analysis,
+        which is different from the deviceUiFeatureEnable structure. This may work
+        better for Jiobits than the legacy command structure.
+
+        Args:
+            device_id: Life360 device ID for the Jiobit
+            cid: Circle ID containing the device
+            duration: Buzz duration in seconds (default: 30)
+            volume: Buzz volume: "low", "medium", "high" (default: "high")
+            command: Command to send - "buzz", "ring", "locate", "sound" (default: "buzz")
+
+        Returns:
+            True if buzz command was sent successfully
+        """
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("buzz_jiobit_v6: Circle %s not found", cid)
+            return False
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/provider/jiobit/devices/{device_id}/circle/{cid}/command"
+
+                # Generate CloudEvents headers
+                ce_id = str(uuid.uuid4())
+                ce_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+                # Use registered device ID if available
+                x_device_id = self._registered_device_id or f"homeassistant{self.config_entry.entry_id.replace('-', '')[:20]}"
+
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                    "circleid": cid,
+                    "x-device-id": x_device_id,
+                    "ce-type": "com.life360.cloud.device.commands.provider.action.invoke.v1",
+                    "ce-id": ce_id,
+                    "ce-specversion": "1.0",
+                    "ce-time": ce_time,
+                    "ce-source": f"/HOMEASSISTANT/{DOMAIN}",
+                }
+
+                # Simplified command structure from APK analysis
+                # This matches TileGpsDeviceCommand model from the Android app
+                payload = {
+                    "data": {
+                        "commands": [
+                            {
+                                "command": command,
+                                "args": {
+                                    "duration": duration,
+                                    "volume": volume,
+                                }
+                            }
+                        ]
+                    }
+                }
+
+                session = self._acct_data[aid].session
+                _LOGGER.info(
+                    "Sending v6 Jiobit command '%s' to device %s (duration=%ds, volume=%s)",
+                    command, device_id[:8], duration, volume
+                )
+                _LOGGER.debug("POST %s", url)
+                _LOGGER.debug("Payload: %s", json.dumps(payload, indent=2))
+
+                async with session.post(url, headers=headers, json=payload) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        _LOGGER.info(
+                            "✅ Jiobit command '%s' sent successfully to %s",
+                            command, device_id[:8]
+                        )
+                        return True
+                    else:
+                        resp_text = await resp.text()
+                        _LOGGER.warning(
+                            "Jiobit command failed: HTTP %s - %s",
+                            resp.status, resp_text
+                        )
+                        _LOGGER.debug("Response headers: %s", dict(resp.headers))
+
+                        # If simplified command fails, log and suggest fallback
+                        _LOGGER.info(
+                            "💡 Simplified v6 command failed. The send_device_command method "
+                            "uses the legacy deviceUiFeatureEnable structure which may work better."
+                        )
+                        return False
+
+            except Exception as err:
+                _LOGGER.error("Error sending Jiobit command: %s", err, exc_info=True)
+                return False
+
+        _LOGGER.debug("No account data found for circle %s", cid)
+        return False
+
+    async def activate_jiobit_lost_mode(
+        self,
+        device_id: str,
+        cid: CircleID,
+    ) -> bool:
+        """Activate lost/stolen mode for a Jiobit device.
+
+        When lost mode is activated, the Jiobit will:
+        - Increase location update frequency
+        - Enable enhanced tracking features
+        - May notify owner when moved
+
+        Args:
+            device_id: Life360 device ID for the Jiobit
+            cid: Circle ID containing the device
+
+        Returns:
+            True if lost mode was activated successfully
+        """
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("activate_jiobit_lost_mode: Circle %s not found", cid)
+            return False
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/provider/jiobit/devices/{device_id}/circles/{cid}/activate-lost-mode"
+
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                _LOGGER.info("Activating lost mode for Jiobit %s", device_id[:8])
+
+                async with session.post(url, headers=headers) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        _LOGGER.info(
+                            "✅ Lost mode activated for Jiobit %s",
+                            device_id[:8]
+                        )
+                        return True
+                    else:
+                        resp_text = await resp.text()
+                        _LOGGER.warning(
+                            "Failed to activate lost mode: HTTP %s - %s",
+                            resp.status, resp_text
+                        )
+                        return False
+
+            except Exception as err:
+                _LOGGER.error("Error activating lost mode: %s", err, exc_info=True)
+                return False
+
+        return False
+
+    async def deactivate_jiobit_lost_mode(
+        self,
+        device_id: str,
+        cid: CircleID,
+    ) -> bool:
+        """Deactivate lost/stolen mode for a Jiobit device.
+
+        Args:
+            device_id: Life360 device ID for the Jiobit
+            cid: Circle ID containing the device
+
+        Returns:
+            True if lost mode was deactivated successfully
+        """
+        circle_data = self.data.circles.get(cid)
+        if not circle_data:
+            _LOGGER.debug("deactivate_jiobit_lost_mode: Circle %s not found", cid)
+            return False
+
+        for aid in circle_data.aids:
+            if aid not in self._acct_data:
+                continue
+
+            acct = self._options.accounts.get(aid)
+            if not acct:
+                continue
+
+            try:
+                url = f"{API_BASE_URL}/v6/provider/jiobit/devices/{device_id}/circles/{cid}/deactivate-lost-mode"
+
+                headers = {
+                    "Authorization": f"Bearer {acct.authorization}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": API_USER_AGENT,
+                }
+
+                session = self._acct_data[aid].session
+                _LOGGER.info("Deactivating lost mode for Jiobit %s", device_id[:8])
+
+                async with session.post(url, headers=headers) as resp:
+                    if resp.status in (200, 201, 202, 204):
+                        _LOGGER.info(
+                            "✅ Lost mode deactivated for Jiobit %s",
+                            device_id[:8]
+                        )
+                        return True
+                    else:
+                        resp_text = await resp.text()
+                        _LOGGER.warning(
+                            "Failed to deactivate lost mode: HTTP %s - %s",
+                            resp.status, resp_text
+                        )
+                        return False
+
+            except Exception as err:
+                _LOGGER.error("Error deactivating lost mode: %s", err, exc_info=True)
+                return False
+
+        return False
+
+    def get_device_type(self, device_id: str) -> str | None:
+        """Get device type for a given device ID.
+
+        Checks device metadata to determine if device is TileBle, TileGps (Jiobit),
+        or other device type.
+
+        Args:
+            device_id: Life360 device ID
+
+        Returns:
+            Device type string: "TileBle", "TileGps", "Unknown", or None if not found
+        """
+        # This would ideally check the v6 device data structure
+        # For now, return None and rely on provider parameter
+        # TODO: Implement proper device type detection from v6 API response
+        _LOGGER.debug("get_device_type not yet fully implemented")
+        return None
 
     async def _client_request(
         self,

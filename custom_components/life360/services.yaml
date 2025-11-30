@@ -243,3 +243,38 @@ toggle_light:
       example: true
       selector:
         boolean:
+
+jiobit_lost_mode:
+  name: Jiobit Lost Mode
+  description: Activate or deactivate lost/stolen mode for a Jiobit device. When activated, this enhances tracking capabilities and alerts. You can use either entity_id (easier) or device_id + circle_id (advanced).
+  fields:
+    entity_id:
+      name: Entity
+      description: The Jiobit device tracker entity (easiest method - automatically determines device_id and circle_id)
+      required: false
+      example: "device_tracker.jiobit_fluffy"
+      selector:
+        entity:
+          integration: life360
+          domain: device_tracker
+    device_id:
+      name: Device ID (Advanced)
+      description: The Jiobit device ID (use this OR entity_id)
+      required: false
+      example: "dr123456"
+      selector:
+        text:
+    circle_id:
+      name: Circle ID (Advanced)
+      description: The Life360 circle ID the device belongs to (required if using device_id)
+      required: false
+      example: "abc123-def456"
+      selector:
+        text:
+    activate:
+      name: Activate
+      description: Activate (true) or deactivate (false) lost mode
+      required: true
+      example: true
+      selector:
+        boolean:

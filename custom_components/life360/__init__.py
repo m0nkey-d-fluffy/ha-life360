@@ -31,6 +31,7 @@ from .const import (
     SERVICE_GET_DEVICES,
     SERVICE_GET_EMERGENCY_CONTACTS,
     SERVICE_GET_INTEGRATIONS,
+    SERVICE_JIOBIT_LOST_MODE,
     SERVICE_RING_DEVICE,
     SERVICE_STOP_RING_DEVICE,
     SERVICE_SYNC_GEOFENCE_ZONES,
@@ -1004,6 +1005,83 @@ async def async_setup(hass: HomeAssistant, _: ConfigType) -> bool:
 
     hass.services.async_register(
         DOMAIN, SERVICE_TOGGLE_LIGHT, toggle_light, _TOGGLE_LIGHT_SCHEMA
+    )
+
+    # Jiobit lost mode service
+    _JIOBIT_LOST_MODE_SCHEMA = vol.Schema({
+        vol.Exclusive("entity_id", "device_selector"): cv.entity_id,
+        vol.Exclusive("device_id", "device_selector"): cv.string,
+        vol.Optional("circle_id"): cv.string,
+        vol.Required("activate"): cv.boolean,
+    })
+
+    async def jiobit_lost_mode(call: ServiceCall) -> None:
+        """Activate or deactivate lost mode for a Jiobit device."""
+        # Support both entity_id and device_id + circle_id
+        entity_id = call.data.get("entity_id")
+
+        if entity_id:
+            device_id, circle_id, _ = _get_device_info_from_entity(entity_id)
+            if not device_id or not circle_id:
+                _LOGGER.error("Failed to extract device info from entity %s", entity_id)
+                return
+        else:
+            device_id = call.data.get("device_id")
+            circle_id = call.data.get("circle_id")
+
+            if not device_id or not circle_id:
+                _LOGGER.error("Either entity_id or both device_id and circle_id must be provided")
+                return
+
+        activate = call.data["activate"]
+
+        _LOGGER.debug(
+            "Service %s called: device_id=%s, circle_id=%s, activate=%s",
+            SERVICE_JIOBIT_LOST_MODE,
+            device_id,
+            circle_id,
+            activate,
+        )
+
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            _LOGGER.warning("No Life360 integration configured")
+            return
+
+        for entry in entries:
+            if not hasattr(entry, "runtime_data") or not entry.runtime_data:
+                continue
+
+            coordinator = entry.runtime_data.coordinator
+            from .helpers import CircleID
+
+            if activate:
+                success = await coordinator.activate_jiobit_lost_mode(
+                    device_id, CircleID(circle_id)
+                )
+                action = "activated"
+            else:
+                success = await coordinator.deactivate_jiobit_lost_mode(
+                    device_id, CircleID(circle_id)
+                )
+                action = "deactivated"
+
+            if success:
+                _LOGGER.info(
+                    "Service %s completed: Lost mode %s for Jiobit %s",
+                    SERVICE_JIOBIT_LOST_MODE, action, device_id
+                )
+                return
+
+        _LOGGER.warning(
+            "Service %s failed: Could not %s lost mode for Jiobit %s",
+            SERVICE_JIOBIT_LOST_MODE,
+            "activate" if activate else "deactivate",
+            device_id
+        )
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_JIOBIT_LOST_MODE, jiobit_lost_mode, _JIOBIT_LOST_MODE_SCHEMA
     )
 
     return True
